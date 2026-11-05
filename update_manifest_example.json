@@ -1,0 +1,12 @@
+{
+  "version": "1.0.1",
+  "title": "Chubby Mod Manager v1.0.1 - Co-op & Immersion Hotfix",
+  "download_url": "https://your-link-here/Chubby_Mod_Manager_Setup.exe",
+  "notes": [
+    "[NEW] v1.0.1 Desktop Installer with custom path picker & automatic in-place updates",
+    "[FIX] Fixed RE4R Co-op cursor visibility when hovering over the in-game Co-op panel",
+    "[HOTFIX] Auto-hide upper-right 'Co-op' button during gameplay when not hovered for full immersion",
+    "[FIX] Capped area/gimmick scans to 15Hz + disk cache and added 60Hz smooth enemy movement",
+    "[FIX] Opening Pause Menu or Attache Case inventory no longer freezes Co-op gameplay"
+  ]
+}

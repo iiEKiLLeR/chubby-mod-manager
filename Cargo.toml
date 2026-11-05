@@ -1,0 +1,21 @@
+[package]
+name = "chubby_mod_manager"
+version = "1.0.2"
+edition = "2024"
+default-run = "chubby_mod_manager"
+
+[[bin]]
+name = "chubby_mod_manager"
+path = "src/main.rs"
+
+[[bin]]
+name = "Chubby_Mod_Manager_Setup"
+path = "src/bin/installer.rs"
+
+[dependencies]
+crc32fast = "1.5.4"
+image = { version = "0.24", default-features = false, features = ["png", "jpeg"] }
+macroquad = "0.4"
+sevenz-rust2 = "0.24.2"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Shell", "Win32_System_Registry", "Win32_System_LibraryLoader", "Win32_UI_Input_XboxController", "Win32_Graphics_Dwm"] }
+zip = { version = "9.3.0", default-features = false, features = ["deflate"] }
