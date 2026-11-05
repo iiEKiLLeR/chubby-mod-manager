@@ -164,6 +164,25 @@ async fn main() {
     }
     prevent_quit();
     let mut app = App::new(data, headless);
+    // Screenshot helpers (for the README): pick a tab / preview a theme without saving it.
+    if shot.is_some() {
+        if let Some(tab) = arg_value("--shot-tab") {
+            app.tab = match tab.to_ascii_lowercase().as_str() {
+                "coop" | "co-op" => app::Tab::Coop,
+                "presets" => app::Tab::Presets,
+                "options" => app::Tab::Options,
+                "log" => app::Tab::Log,
+                _ => app::Tab::Mods,
+            };
+        }
+        if let Some(id) = arg_value("--shot-theme") {
+            if let Some(i) = ui::THEMES.iter().position(|t| t.id.eq_ignore_ascii_case(&id)) {
+                app.ui.theme_idx = i;
+            }
+        }
+        app.toast = None;
+        app.log.clear();
+    }
     if !opened.is_empty() {
         app.actions.push_back(Action::Drop(opened));
     }

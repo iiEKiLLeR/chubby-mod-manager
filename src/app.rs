@@ -17,6 +17,7 @@ pub const TITLE: &str = "Chubby Mod Manager";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BUNDLED_COOP_ZIP_NAME: &str = "MULTIPLAYER_RE4R_Chubby_Enhanced.zip";
 pub const BUNDLED_COOP_ZIP: &[u8] = include_bytes!("../assets/MULTIPLAYER_RE4R_Chubby_Enhanced.zip");
+pub const BUNDLED_COOP_FIX_LUA: &[u8] = include_bytes!("../assets/chubby_coop_fix.lua");
 
 /// Public GitHub repo that hosts installer downloads; every copy of the app checks it on startup.
 pub const GITHUB_RELEASES_REPO: &str = "iiEKiLLeR/chubby-mod-manager-releases";
@@ -28,12 +29,12 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
-    ("NEW", "v1.0.2 Automatic updates from GitHub: the app checks for new versions every time it opens - no URL or IP needed"),
+    ("FIX", "v1.0.3 Smoother zombies on your partner's screen: enemy animation now syncs at 60 Hz (was 30 Hz)"),
+    ("FIX", "Removed an older Chubby 'lag guard' that cached enemy data and capped it to 15 Hz when the game dipped below ~45 fps"),
+    ("FIX", "Removed the old enemy position smoother that dragged enemies back on the host's side"),
+    ("NEW", "Automatic updates from GitHub: the app checks for new versions every time it opens"),
     ("NEW", "One-click 'PLAY' button in the top bar and 'PLAY GAME' button in the left sidebar"),
-    ("NEW", "REFramework (dinput8.dll) menu now syncs live with your active Chubby Mod Manager theme & opens with Fn+5 (F5)"),
-    ("FIX", "Fixed RE4R Co-op double-cursor bug and made cursor visible when hovering the Co-op panel"),
-    ("HOTFIX", "Auto-hide the upper-right 'Co-op' button during gameplay when not hovered for full immersion"),
-    ("FIX", "Capped area/gimmick scans to 15Hz + disk cache, added 60Hz smooth enemy movement, and unpaused inventory in Co-op"),
+    ("NEW", "REFramework menu matches your Chubby theme & opens with Fn+5 (F5)"),
 ];
 
 #[derive(Clone, Debug)]
@@ -478,7 +479,8 @@ impl App {
             "{{\"id\":\"{}\",\"name\":\"{}\",\"accent_abgr\":{}}}\n",
             t.id, t.name, abgr
         );
-        let hz_json = "{\"master\":60,\"partner_pos\":60,\"partner_rot\":60,\"partner_anim\":30,\"partner_wpn\":30,\"enemy_pos\":60,\"enemy_anim\":30,\"enemy_vitals\":30,\"flag_gimmick\":15}\n";
+        // Ensure 60 Hz enemy animation & partner animation so zombies don't look like 10-20 FPS on partner side
+        let hz_60_json = "{\"master\":60,\"partner_pos\":60,\"partner_rot\":60,\"partner_anim\":60,\"partner_wpn\":30,\"enemy_pos\":60,\"enemy_anim\":60,\"enemy_vitals\":30,\"flag_gimmick\":15}\n";
 
         for root in &roots {
             let ref_dll = root.join("dinput8.dll");
@@ -500,8 +502,20 @@ impl App {
                 let _ = std::fs::create_dir_all(&data_dir);
                 let _ = fsx::write_atomic(&data_dir.join("chubby_theme.json"), theme_json.as_bytes());
                 let hz_path = data_dir.join("RE4MP_hz.json");
-                if !hz_path.is_file() {
-                    let _ = fsx::write_atomic(&hz_path, hz_json.as_bytes());
+                let needs_hz_write = match std::fs::read_to_string(&hz_path) {
+                    Ok(existing) => existing.contains("\"enemy_anim\":30") || existing.contains("\"partner_anim\":30"),
+                    Err(_) => true,
+                };
+                if needs_hz_write {
+                    let _ = fsx::write_atomic(&hz_path, hz_60_json.as_bytes());
+                }
+                // Keep the Chubby Co-op fix script up to date wherever the mod is installed.
+                let lua_path = root.join("reframework").join("autorun").join("!chubby_coop_fix.lua");
+                if lua_path.is_file() {
+                    let current = std::fs::read(&lua_path).unwrap_or_default();
+                    if current != BUNDLED_COOP_FIX_LUA {
+                        let _ = fsx::write_atomic(&lua_path, BUNDLED_COOP_FIX_LUA);
+                    }
                 }
             }
         }
@@ -522,7 +536,7 @@ impl App {
             for m in &mut self.lib.state.mods {
                 for f in &mut m.files {
                     let dl = f.dest.to_ascii_lowercase();
-                    if dl.ends_with("dinput8.dll") || dl.ends_with("re4-co-op.dll") || dl.ends_with("chubby_theme.json") || dl.ends_with("re4mp_hz.json") {
+                    if dl.ends_with("dinput8.dll") || dl.ends_with("re4-co-op.dll") || dl.ends_with("chubby_theme.json") || dl.ends_with("re4mp_hz.json") || dl.ends_with("!chubby_coop_fix.lua") {
                         if let Ok(crc) = fsx::crc_file(&gd.join(&f.dest)) {
                             if f.crc != crc {
                                 f.crc = crc;
@@ -1365,10 +1379,10 @@ pub fn patch_coop_dll_bytes(buf: &mut [u8], t: &Theme) -> bool {
     write_i32_le(buf, 1319404, 2); // master: 60Hz
     write_i32_le(buf, 1320576, 2); // partner_pos: 60Hz
     write_i32_le(buf, 1320580, 2); // partner_rot: 60Hz
-    write_i32_le(buf, 1320584, 1); // partner_anim: 30Hz
+    write_i32_le(buf, 1320584, 2); // partner_anim: 60Hz
     write_i32_le(buf, 1320588, 1); // partner_wpn: 30Hz
     write_i32_le(buf, 1320592, 2); // enemy_pos: 60Hz
-    write_i32_le(buf, 1320596, 1); // enemy_anim: 30Hz
+    write_i32_le(buf, 1320596, 2); // enemy_anim: 60Hz (was 30Hz: enemies looked choppy on the partner's side)
     write_i32_le(buf, 1320600, 1); // enemy_vitals: 30Hz
     write_i32_le(buf, 1320604, 0); // flag_gimmick: 15Hz
 
