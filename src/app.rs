@@ -29,12 +29,8 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
-    ("FIX", "v1.0.3 Smoother zombies on your partner's screen: enemy animation now syncs at 60 Hz (was 30 Hz)"),
-    ("FIX", "Removed an older Chubby 'lag guard' that cached enemy data and capped it to 15 Hz when the game dipped below ~45 fps"),
-    ("FIX", "Removed the old enemy position smoother that dragged enemies back on the host's side"),
-    ("NEW", "Automatic updates from GitHub: the app checks for new versions every time it opens"),
-    ("NEW", "One-click 'PLAY' button in the top bar and 'PLAY GAME' button in the left sidebar"),
-    ("NEW", "REFramework menu matches your Chubby theme & opens with Fn+5 (F5)"),
+    ("NEW", "Release notes modal now strictly displays only the newest fixes and changes for the current version"),
+    ("FIX", "Removed all legacy historical notes from previous versions to keep the update window concise"),
 ];
 
 #[derive(Clone, Debug)]

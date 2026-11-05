@@ -1014,7 +1014,7 @@ impl App {
         } else {
             (
                 format!("WHAT'S NEW IN VERSION {}", crate::app::VERSION),
-                "RELEASE NOTES, CO-OP FIXES & HOTFIXES".to_string(),
+                "LATEST VERSION PATCH NOTES & FIXES".to_string(),
             )
         };
 
