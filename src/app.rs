@@ -29,9 +29,9 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
-    ("PERF", "Fixed Severe Co-op Frame Drops (90 -> 30 FPS): removed unstable managed SDK singleton caching that caused 100+ internal game exceptions"),
-    ("PERF", "Optimized Co-op Sync Rate: balanced enemy animation sync to 30 Hz to eliminate packet flooding and CPU lag during combat with many enemies"),
-    ("PERF", "Eliminated Game Loop Reflection & Disk I/O: converted pause protection to event-driven hooks and removed synchronous JSON disk polling from the render loop"),
+    ("GRAPHICS", "High-Definition Anti-Aliased UI: fixed pixelated and low-res buttons with smooth subpixel anti-aliasing across all UI shapes, borders, and vector icons"),
+    ("FIX", "Independent Update Check: clicking 'Check for Updates' now only checks for updates without unexpectedly opening the patch notes dialog"),
+    ("UI", "Dedicated View Patch Notes: patch notes are now only opened when explicitly clicking the 'View Patch Notes' button"),
 ];
 
 #[derive(Clone, Debug)]
@@ -134,6 +134,7 @@ pub struct App {
     last_watch: f64,
     // update & patch notes popup
     pub show_update_modal: bool,
+    pub manual_update_check: bool,
     pub remote_update: Option<RemoteUpdate>,
     pub update_status: String,
     pub update_rx: Option<Receiver<Result<Option<RemoteUpdate>, String>>>,
@@ -214,6 +215,7 @@ impl App {
             mods_sig: 0,
             last_watch: 0.0,
             show_update_modal,
+            manual_update_check: false,
             remote_update: None,
             update_status: format!("Running v{} (latest installed)", VERSION),
             update_rx: None,
@@ -284,9 +286,7 @@ impl App {
         }
         let local_manifest = self.data.join("Data").join("update.json");
         self.update_status = "Checking for updates...".to_string();
-        if manual {
-            self.show_update_modal = true;
-        }
+        self.manual_update_check = manual;
         let (tx, rx) = channel();
         self.update_rx = Some(rx);
         std::thread::spawn(move || {
@@ -346,6 +346,8 @@ impl App {
         let Some(rx) = &self.update_rx else { return };
         let Ok(res) = rx.try_recv() else { return };
         self.update_rx = None;
+        let was_manual = self.manual_update_check;
+        self.manual_update_check = false;
         match res {
             Ok(Some(upd)) => {
                 let ver = upd.version.clone();
@@ -356,9 +358,15 @@ impl App {
             }
             Ok(None) => {
                 self.update_status = format!("You are up to date (v{}).", VERSION);
+                if was_manual {
+                    self.say(Ok(format!("You are up to date (v{}).", VERSION)));
+                }
             }
             Err(e) => {
                 self.update_status = format!("Update check: {} (running v{})", e, VERSION);
+                if was_manual {
+                    self.say(Err(format!("Update check failed: {}", e)));
+                }
             }
         }
     }

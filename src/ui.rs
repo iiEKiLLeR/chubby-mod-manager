@@ -186,97 +186,411 @@ pub fn theme_index(id: &str) -> usize {
     THEMES.iter().position(|t| t.id == id).unwrap_or(0)
 }
 
-/// Non-overlapping rounded rectangle fill so translucent colors blend cleanly.
-pub fn fill_rrect(r: Rect, rad: f32, c: Color) {
-    let rad = rad.min(r.w * 0.5).min(r.h * 0.5).max(0.0);
+use macroquad::models::{draw_mesh, Mesh, Vertex};
+
+#[inline]
+fn vtx(x: f32, y: f32, c: Color) -> Vertex {
+    Vertex::new(x, y, 0.0, 0.0, 0.0, c)
+}
+
+struct PointNormal {
+    p: Vec2,
+    n: Vec2,
+}
+
+fn rrect_contour(r: Rect, rad: f32) -> Vec<PointNormal> {
+    let w = r.w.max(0.0);
+    let h = r.h.max(0.0);
+    let rad = rad.min(w * 0.5).min(h * 0.5).max(0.0);
+    let mut out = Vec::with_capacity(36);
+
     if rad <= 0.5 {
-        draw_rectangle(r.x, r.y, r.w, r.h, c);
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        out.push(PointNormal { p: vec2(r.x + w, r.y), n: vec2(s, -s) });
+        out.push(PointNormal { p: vec2(r.x + w, r.y + h), n: vec2(s, s) });
+        out.push(PointNormal { p: vec2(r.x, r.y + h), n: vec2(-s, s) });
+        out.push(PointNormal { p: vec2(r.x, r.y), n: vec2(-s, -s) });
+        return out;
+    }
+
+    let c0 = vec2(r.x + w - rad, r.y + rad);       // Top-right
+    let c1 = vec2(r.x + w - rad, r.y + h - rad);   // Bottom-right
+    let c2 = vec2(r.x + rad, r.y + h - rad);       // Bottom-left
+    let c3 = vec2(r.x + rad, r.y + rad);           // Top-left
+
+    let centers = [c0, c1, c2, c3];
+    let start_angles = [
+        -std::f32::consts::FRAC_PI_2,
+        0.0,
+        std::f32::consts::FRAC_PI_2,
+        std::f32::consts::PI,
+    ];
+
+    let steps = 8;
+    for k in 0..4 {
+        let c = centers[k];
+        let a0 = start_angles[k];
+        for i in 0..=steps {
+            let theta = a0 + std::f32::consts::FRAC_PI_2 * (i as f32 / steps as f32);
+            let n = vec2(theta.cos(), theta.sin());
+            out.push(PointNormal { p: c + n * rad, n });
+        }
+    }
+    out
+}
+
+/// Silky-smooth anti-aliased rounded rectangle fill using subpixel alpha fringe feathering.
+pub fn fill_rrect(r: Rect, rad: f32, c: Color) {
+    if r.w <= 0.0 || r.h <= 0.0 || c.a <= 0.001 {
         return;
     }
-    draw_rectangle(r.x + rad, r.y, r.w - rad * 2.0, r.h, c);
-    draw_rectangle(r.x, r.y + rad, rad, r.h - rad * 2.0, c);
-    draw_rectangle(r.x + r.w - rad, r.y + rad, rad, r.h - rad * 2.0, c);
-    let corners = [
-        (r.x + rad, r.y + rad, std::f32::consts::PI, std::f32::consts::FRAC_PI_2 * 3.0),
-        (r.x + r.w - rad, r.y + rad, std::f32::consts::FRAC_PI_2 * 3.0, std::f32::consts::TAU),
-        (r.x + r.w - rad, r.y + r.h - rad, 0.0, std::f32::consts::FRAC_PI_2),
-        (r.x + rad, r.y + r.h - rad, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),
-    ];
-    let steps = 14;
-    for (cx, cy, a0, a1) in corners {
-        let center = vec2(cx, cy);
-        for i in 0..steps {
-            let t0 = a0 + (a1 - a0) * (i as f32 / steps as f32);
-            let t1 = a0 + (a1 - a0) * ((i + 1) as f32 / steps as f32);
-            let p0 = vec2(cx + t0.cos() * rad, cy + t0.sin() * rad);
-            let p1 = vec2(cx + t1.cos() * rad, cy + t1.sin() * rad);
-            draw_triangle(center, p0, p1, c);
+    let pts = rrect_contour(r, rad);
+    let n = pts.len();
+    if n < 3 {
+        return;
+    }
+
+    let c_trans = Color::new(c.r, c.g, c.b, 0.0);
+    let center = vec2(r.x + r.w * 0.5, r.y + r.h * 0.5);
+
+    let mut vertices = Vec::with_capacity(1 + n * 2);
+    vertices.push(vtx(center.x, center.y, c));
+
+    for pt in &pts {
+        let p_in = pt.p - pt.n * 0.5;
+        vertices.push(vtx(p_in.x, p_in.y, c));
+    }
+    for pt in &pts {
+        let p_out = pt.p + pt.n * 0.5;
+        vertices.push(vtx(p_out.x, p_out.y, c_trans));
+    }
+
+    let mut indices = Vec::with_capacity(n * 9);
+    for i in 0..n {
+        let next = (i + 1) % n;
+        let in_curr = (1 + i) as u16;
+        let in_next = (1 + next) as u16;
+        let out_curr = (1 + n + i) as u16;
+        let out_next = (1 + n + next) as u16;
+
+        // Interior fan
+        indices.push(0);
+        indices.push(in_curr);
+        indices.push(in_next);
+
+        // Outer feather ribbon
+        indices.push(in_curr);
+        indices.push(out_curr);
+        indices.push(out_next);
+
+        indices.push(in_curr);
+        indices.push(out_next);
+        indices.push(in_next);
+    }
+
+    draw_mesh(&Mesh {
+        vertices,
+        indices,
+        texture: None,
+    });
+}
+
+/// Silky-smooth anti-aliased rounded rectangle outline rendered as a continuous connected quad ribbon.
+pub fn stroke_rrect(r: Rect, rad: f32, thickness: f32, c: Color) {
+    if r.w <= 0.0 || r.h <= 0.0 || c.a <= 0.001 || thickness <= 0.05 {
+        return;
+    }
+    let pts = rrect_contour(r, rad);
+    let n = pts.len();
+    if n < 3 {
+        return;
+    }
+
+    let c_trans = Color::new(c.r, c.g, c.b, 0.0);
+
+    if thickness <= 1.0 {
+        let alpha = c.a * thickness.clamp(0.0, 1.0);
+        let c_mid = Color::new(c.r, c.g, c.b, alpha);
+
+        let mut vertices = Vec::with_capacity(n * 3);
+        for pt in &pts {
+            let p_in = pt.p - pt.n * 0.5;
+            vertices.push(vtx(p_in.x, p_in.y, c_trans));
         }
+        for pt in &pts {
+            vertices.push(vtx(pt.p.x, pt.p.y, c_mid));
+        }
+        for pt in &pts {
+            let p_out = pt.p + pt.n * 0.5;
+            vertices.push(vtx(p_out.x, p_out.y, c_trans));
+        }
+
+        let mut indices = Vec::with_capacity(n * 12);
+        for i in 0..n {
+            let next = (i + 1) % n;
+            let in_curr = i as u16;
+            let in_next = next as u16;
+            let mid_curr = (n + i) as u16;
+            let mid_next = (n + next) as u16;
+            let out_curr = (2 * n + i) as u16;
+            let out_next = (2 * n + next) as u16;
+
+            indices.push(in_curr);
+            indices.push(mid_curr);
+            indices.push(mid_next);
+
+            indices.push(in_curr);
+            indices.push(mid_next);
+            indices.push(in_next);
+
+            indices.push(mid_curr);
+            indices.push(out_curr);
+            indices.push(out_next);
+
+            indices.push(mid_curr);
+            indices.push(out_next);
+            indices.push(mid_next);
+        }
+
+        draw_mesh(&Mesh {
+            vertices,
+            indices,
+            texture: None,
+        });
+    } else {
+        let half_t = thickness * 0.5;
+        let r_in_fade = half_t + 0.5;
+        let r_in_core = half_t - 0.5;
+        let r_out_core = half_t - 0.5;
+        let r_out_fade = half_t + 0.5;
+
+        let mut vertices = Vec::with_capacity(n * 4);
+        for pt in &pts {
+            let p = pt.p - pt.n * r_in_fade;
+            vertices.push(vtx(p.x, p.y, c_trans));
+        }
+        for pt in &pts {
+            let p = pt.p - pt.n * r_in_core;
+            vertices.push(vtx(p.x, p.y, c));
+        }
+        for pt in &pts {
+            let p = pt.p + pt.n * r_out_core;
+            vertices.push(vtx(p.x, p.y, c));
+        }
+        for pt in &pts {
+            let p = pt.p + pt.n * r_out_fade;
+            vertices.push(vtx(p.x, p.y, c_trans));
+        }
+
+        let mut indices = Vec::with_capacity(n * 18);
+        for i in 0..n {
+            let next = (i + 1) % n;
+            let in_f_curr = i as u16;
+            let in_f_next = next as u16;
+            let in_c_curr = (n + i) as u16;
+            let in_c_next = (n + next) as u16;
+            let out_c_curr = (2 * n + i) as u16;
+            let out_c_next = (2 * n + next) as u16;
+            let out_f_curr = (3 * n + i) as u16;
+            let out_f_next = (3 * n + next) as u16;
+
+            // Inner fade ribbon
+            indices.push(in_f_curr);
+            indices.push(in_c_curr);
+            indices.push(in_c_next);
+
+            indices.push(in_f_curr);
+            indices.push(in_c_next);
+            indices.push(in_f_next);
+
+            // Solid core ribbon
+            indices.push(in_c_curr);
+            indices.push(out_c_curr);
+            indices.push(out_c_next);
+
+            indices.push(in_c_curr);
+            indices.push(out_c_next);
+            indices.push(in_c_next);
+
+            // Outer fade ribbon
+            indices.push(out_c_curr);
+            indices.push(out_f_curr);
+            indices.push(out_f_next);
+
+            indices.push(out_c_curr);
+            indices.push(out_f_next);
+            indices.push(out_c_next);
+        }
+
+        draw_mesh(&Mesh {
+            vertices,
+            indices,
+            texture: None,
+        });
     }
 }
 
-/// Crisp, seamless rounded rectangle outline rendered as a continuous connected quad ribbon.
-pub fn stroke_rrect(r: Rect, rad: f32, thickness: f32, c: Color) {
-    let rad = rad.min(r.w * 0.5).min(r.h * 0.5).max(0.0);
-    if rad <= 0.5 {
-        draw_rectangle_lines(r.x, r.y, r.w, r.h, thickness, c);
+/// Silky-smooth anti-aliased circle fill.
+pub fn fill_circle_aa(cx: f32, cy: f32, rad: f32, c: Color) {
+    if rad <= 0.0 || c.a <= 0.001 {
         return;
     }
+    let steps = 32;
+    let mut vertices = Vec::with_capacity(1 + steps * 2);
+    let mut indices = Vec::with_capacity(steps * 9);
+    let c_trans = Color::new(c.r, c.g, c.b, 0.0);
+    vertices.push(vtx(cx, cy, c));
 
-    let half_t = thickness * 0.5;
-    let r_in = (rad - half_t).max(0.0);
-    let r_out = rad + half_t;
+    let r_in = (rad - 0.5).max(0.0);
+    let r_out = rad + 0.5;
 
-    // Corner centers: [top-right, bottom-right, bottom-left, top-left] clockwise
-    let corners = [
-        (r.x + r.w - rad, r.y + rad, -std::f32::consts::FRAC_PI_2, 0.0),
-        (r.x + r.w - rad, r.y + r.h - rad, 0.0, std::f32::consts::FRAC_PI_2),
-        (r.x + rad, r.y + r.h - rad, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),
-        (r.x + rad, r.y + rad, std::f32::consts::PI, std::f32::consts::FRAC_PI_2 * 3.0),
-    ];
-
-    let steps = 16;
-    for (cx, cy, a0, a1) in corners {
-        for i in 0..steps {
-            let t0 = a0 + (a1 - a0) * (i as f32 / steps as f32);
-            let t1 = a0 + (a1 - a0) * ((i + 1) as f32 / steps as f32);
-            let in0 = vec2(cx + t0.cos() * r_in, cy + t0.sin() * r_in);
-            let out0 = vec2(cx + t0.cos() * r_out, cy + t0.sin() * r_out);
-            let in1 = vec2(cx + t1.cos() * r_in, cy + t1.sin() * r_in);
-            let out1 = vec2(cx + t1.cos() * r_out, cy + t1.sin() * r_out);
-            draw_triangle(in0, out0, out1, c);
-            draw_triangle(in0, out1, in1, c);
-        }
+    for i in 0..steps {
+        let theta = std::f32::consts::TAU * (i as f32 / steps as f32);
+        let nx = theta.cos();
+        let ny = theta.sin();
+        vertices.push(vtx(cx + nx * r_in, cy + ny * r_in, c));
+    }
+    for i in 0..steps {
+        let theta = std::f32::consts::TAU * (i as f32 / steps as f32);
+        let nx = theta.cos();
+        let ny = theta.sin();
+        vertices.push(vtx(cx + nx * r_out, cy + ny * r_out, c_trans));
     }
 
-    let x_left = r.x + rad;
-    let x_right = r.x + r.w - rad;
-    let y_top = r.y + rad;
-    let y_bot = r.y + r.h - rad;
+    for i in 0..steps {
+        let next = (i + 1) % steps;
+        let in_curr = (1 + i) as u16;
+        let in_next = (1 + next) as u16;
+        let out_curr = (1 + steps + i) as u16;
+        let out_next = (1 + steps + next) as u16;
 
-    // Top edge: connects top-left corner end (3*PI/2) to top-right corner start (-PI/2)
-    let top_y_in = r.y + rad - r_in;
-    let top_y_out = r.y + rad - r_out;
-    draw_triangle(vec2(x_left, top_y_in), vec2(x_left, top_y_out), vec2(x_right, top_y_out), c);
-    draw_triangle(vec2(x_left, top_y_in), vec2(x_right, top_y_out), vec2(x_right, top_y_in), c);
+        indices.push(0);
+        indices.push(in_curr);
+        indices.push(in_next);
 
-    // Right edge: connects top-right corner end (0) to bottom-right corner start (0)
-    let right_x_in = r.x + r.w - rad + r_in;
-    let right_x_out = r.x + r.w - rad + r_out;
-    draw_triangle(vec2(right_x_in, y_top), vec2(right_x_out, y_top), vec2(right_x_out, y_bot), c);
-    draw_triangle(vec2(right_x_in, y_top), vec2(right_x_out, y_bot), vec2(right_x_in, y_bot), c);
+        indices.push(in_curr);
+        indices.push(out_curr);
+        indices.push(out_next);
 
-    // Bottom edge: connects bottom-right corner end (PI/2) to bottom-left corner start (PI/2)
-    let bot_y_in = r.y + r.h - rad + r_in;
-    let bot_y_out = r.y + r.h - rad + r_out;
-    draw_triangle(vec2(x_left, bot_y_in), vec2(x_left, bot_y_out), vec2(x_right, bot_y_out), c);
-    draw_triangle(vec2(x_left, bot_y_in), vec2(x_right, bot_y_out), vec2(x_right, bot_y_in), c);
+        indices.push(in_curr);
+        indices.push(out_next);
+        indices.push(in_next);
+    }
 
-    // Left edge: connects bottom-left corner end (PI) to top-left corner start (PI)
-    let left_x_in = r.x + rad - r_in;
-    let left_x_out = r.x + rad - r_out;
-    draw_triangle(vec2(left_x_in, y_top), vec2(left_x_out, y_top), vec2(left_x_out, y_bot), c);
-    draw_triangle(vec2(left_x_in, y_top), vec2(left_x_out, y_bot), vec2(left_x_in, y_bot), c);
+    draw_mesh(&Mesh {
+        vertices,
+        indices,
+        texture: None,
+    });
+}
+
+/// Silky-smooth anti-aliased line.
+pub fn draw_line_aa(x1: f32, y1: f32, x2: f32, y2: f32, thickness: f32, c: Color) {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= 0.001 || thickness <= 0.01 || c.a <= 0.001 {
+        return;
+    }
+    let nx = -dy / len;
+    let ny = dx / len;
+    let tx = dx / len;
+    let ty = dy / len;
+
+    let half_t = thickness * 0.5;
+    let r_core = (half_t - 0.5).max(0.0);
+    let r_fade = half_t + 0.5;
+    let c_trans = Color::new(c.r, c.g, c.b, 0.0);
+
+    let p1 = vec2(x1, y1);
+    let p2 = vec2(x2, y2);
+    let n = vec2(nx, ny);
+    let t = vec2(tx, ty);
+
+    let c0 = p1 - n * r_core;
+    let c1 = p1 + n * r_core;
+    let c2 = p2 + n * r_core;
+    let c3 = p2 - n * r_core;
+
+    let o0 = p1 - n * r_fade - t * 0.5;
+    let o1 = p1 + n * r_fade - t * 0.5;
+    let o2 = p2 + n * r_fade + t * 0.5;
+    let o3 = p2 - n * r_fade + t * 0.5;
+
+    let vertices = vec![
+        vtx(c0.x, c0.y, c),
+        vtx(c1.x, c1.y, c),
+        vtx(c2.x, c2.y, c),
+        vtx(c3.x, c3.y, c),
+        vtx(o0.x, o0.y, c_trans),
+        vtx(o1.x, o1.y, c_trans),
+        vtx(o2.x, o2.y, c_trans),
+        vtx(o3.x, o3.y, c_trans),
+    ];
+    let indices = vec![
+        0, 1, 2, 0, 2, 3,
+        1, 5, 6, 1, 6, 2,
+        4, 0, 3, 4, 3, 7,
+        4, 5, 1, 4, 1, 0,
+        3, 2, 6, 3, 6, 7,
+    ];
+    draw_mesh(&Mesh {
+        vertices,
+        indices,
+        texture: None,
+    });
+}
+
+/// Crystal-clear vector anti-aliased play triangle icon.
+pub fn draw_play_triangle_aa(x: f32, y: f32, size: f32, c: Color) {
+    if size <= 0.0 || c.a <= 0.001 {
+        return;
+    }
+    let p0 = vec2(x, y);
+    let p1 = vec2(x + size * 0.92, y + size * 0.5);
+    let p2 = vec2(x, y + size);
+
+    let d0 = (p1 - p0).normalize();
+    let n0 = vec2(d0.y, -d0.x);
+    let d1 = (p2 - p1).normalize();
+    let n1 = vec2(d1.y, -d1.x);
+    let n2 = vec2(-1.0, 0.0);
+
+    let cn0 = (n2 + n0).normalize();
+    let cn1 = (n0 + n1).normalize();
+    let cn2 = (n1 + n2).normalize();
+
+    let c_trans = Color::new(c.r, c.g, c.b, 0.0);
+
+    let in0 = p0 - cn0 * 0.5;
+    let in1 = p1 - cn1 * 0.5;
+    let in2 = p2 - cn2 * 0.5;
+
+    let out0 = p0 + cn0 * 0.5;
+    let out1 = p1 + cn1 * 0.5;
+    let out2 = p2 + cn2 * 0.5;
+
+    let vertices = vec![
+        vtx(in0.x, in0.y, c),
+        vtx(in1.x, in1.y, c),
+        vtx(in2.x, in2.y, c),
+        vtx(out0.x, out0.y, c_trans),
+        vtx(out1.x, out1.y, c_trans),
+        vtx(out2.x, out2.y, c_trans),
+    ];
+
+    let indices = vec![
+        0, 1, 2,
+        0, 3, 4, 0, 4, 1,
+        1, 4, 5, 1, 5, 2,
+        2, 5, 3, 2, 3, 0,
+    ];
+
+    draw_mesh(&Mesh {
+        vertices,
+        indices,
+        texture: None,
+    });
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -296,7 +610,6 @@ pub struct Ui {
     pub font: Option<Font>,
     pub bold: Option<Font>,
     pub icon: Option<Texture2D>,
-    pub play_icon: Option<Texture2D>,
     pub mouse: Vec2,
     pub pressed: bool,
     pub consumed: bool,
@@ -326,35 +639,7 @@ impl Ui {
             tex.set_filter(FilterMode::Linear);
             tex
         });
-        let play_icon = {
-            const SIZE: usize = 32;
-            let mut pixels = vec![0u8; SIZE * SIZE * 4];
-            let len = (20.0f32 * 20.0 + 12.0 * 12.0).sqrt();
-            let nx1 = -12.0 / len;
-            let ny1 = 20.0 / len;
-            let nx2 = -12.0 / len;
-            let ny2 = -20.0 / len;
-            for y in 0..SIZE {
-                for x in 0..SIZE {
-                    let px = x as f32 + 0.5;
-                    let py = y as f32 + 0.5;
-                    let d0 = px - 6.0;
-                    let d1 = nx1 * (px - 6.0) + ny1 * (py - 4.0);
-                    let d2 = nx2 * (px - 6.0) + ny2 * (py - 28.0);
-                    let d = d0.min(d1.min(d2));
-                    let a = (d + 0.5).clamp(0.0, 1.0);
-                    let idx = (y * SIZE + x) * 4;
-                    pixels[idx] = 255;
-                    pixels[idx + 1] = 255;
-                    pixels[idx + 2] = 255;
-                    pixels[idx + 3] = (a * 255.0).round() as u8;
-                }
-            }
-            let tex = Texture2D::from_rgba8(SIZE as u16, SIZE as u16, &pixels);
-            tex.set_filter(FilterMode::Linear);
-            Some(tex)
-        };
-        Ui { font, bold, icon, play_icon, ..Ui::new_light() }
+        Ui { font, bold, icon, ..Ui::new_light() }
     }
 
     /// Widgets without fonts (used by the self-test probe).
@@ -363,7 +648,6 @@ impl Ui {
             font: None,
             bold: None,
             icon: None,
-            play_icon: None,
             mouse: vec2(-1.0, -1.0),
             pressed: false,
             consumed: false,
@@ -408,18 +692,7 @@ impl Ui {
     }
 
     pub fn play_icon(&self, x: f32, y: f32, size: f32, c: Color) {
-        if let Some(tex) = &self.play_icon {
-            draw_texture_ex(
-                tex,
-                x,
-                y,
-                c,
-                DrawTextureParams {
-                    dest_size: Some(vec2(size, size)),
-                    ..Default::default()
-                },
-            );
-        }
+        draw_play_triangle_aa(x, y, size, c);
     }
 
     pub fn text(&self, s: &str, x: f32, y: f32, size: f32, c: Color) {
@@ -481,7 +754,7 @@ impl Ui {
         fill_rrect(Rect::new(r.x + 2.0, r.y + 4.0, r.w, r.h), 8.0, Color::new(0.0, 0.0, 0.0, 0.30));
         fill_rrect(r, 8.0, c);
         if r.w > 20.0 {
-            draw_line(r.x + 8.0, r.y + 1.0, r.x + r.w - 8.0, r.y + 1.0, 1.0, t.line_hi);
+            draw_line_aa(r.x + 8.0, r.y + 1.0, r.x + r.w - 8.0, r.y + 1.0, 1.0, t.line_hi);
         }
         stroke_rrect(r, 8.0, 1.0, t.line);
     }
@@ -545,8 +818,8 @@ impl Ui {
         stroke_rrect(sw, 10.0, 1.0, if on { t.accent_hi } else { t.line });
         let kx = if on { sw.x + sw.w - 10.0 } else { sw.x + 10.0 };
         let ky = sw.y + sw.h * 0.5;
-        draw_circle(kx, ky + 1.0, 7.5, Color::new(0.0, 0.0, 0.0, 0.25));
-        draw_circle(kx, ky, 7.5, t.text);
+        fill_circle_aa(kx, ky + 1.0, 7.5, Color::new(0.0, 0.0, 0.0, 0.25));
+        fill_circle_aa(kx, ky, 7.5, t.text);
         self.text(label, r.x + 8.0, r.y + r.h / 2.0 + 5.0, 15.0, t.text);
         self.click(r)
     }
@@ -585,7 +858,7 @@ impl Ui {
             self.text(&shown, r.x + 10.0, ty, size, t.text);
             if focused && (get_time() * 2.0) as i64 % 2 == 0 {
                 let cx = r.x + 11.0 + self.width(&shown, size);
-                draw_line(cx, r.y + 6.0, cx, r.y + r.h - 6.0, 1.5, t.accent_hi);
+                draw_line_aa(cx, r.y + 6.0, cx, r.y + r.h - 6.0, 1.5, t.accent_hi);
             }
         }
         let mut submitted = false;

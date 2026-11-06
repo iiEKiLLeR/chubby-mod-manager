@@ -36,7 +36,7 @@ impl App {
         let t = *self.ui.theme();
         draw_rectangle(0.0, 0.0, w, 56.0, t.top_bar);
         draw_rectangle(0.0, 54.0, w, 2.0, t.accent);
-        draw_line(0.0, 54.0, w * 0.45, 54.0, 1.0, t.accent_hi);
+        draw_line_aa(0.0, 54.0, w * 0.45, 54.0, 1.0, t.accent_hi);
 
         // Modern rounded brand emblem + title.
         let badge = Rect::new(14.0, 12.0, 32.0, 32.0);
@@ -112,7 +112,7 @@ impl App {
             if running { t.good } else if play_hov { WHITE } else { t.accent_hi },
         );
         if running {
-            draw_circle(play_r.x + 15.0, play_r.y + 16.0, 4.5, t.good);
+            fill_circle_aa(play_r.x + 15.0, play_r.y + 16.0, 4.5, t.good);
             self.ui.btext("PLAYING", play_r.x + 25.0, play_r.y + 21.5, 13.5, t.good);
         } else {
             let tri_col = if play_hov { Color::new(0.05, 0.06, 0.08, 1.0) } else { WHITE };
@@ -130,7 +130,7 @@ impl App {
         let thov = self.ui.hover(tr);
         fill_rrect(tr, 14.0, if thov { t.btn_hover } else { t.panel });
         stroke_rrect(tr, 14.0, 1.0, if thov { t.accent_hi } else { t.line });
-        draw_circle(tr.x + 12.0, tr.y + 14.0, 4.5, t.accent_hi);
+        fill_circle_aa(tr.x + 12.0, tr.y + 14.0, 4.5, t.accent_hi);
         self.ui.text(&theme_label, tr.x + 21.0, tr.y + 18.5, 13.0, t.text);
         if self.ui.click(tr) {
             self.cycle_theme();
@@ -157,7 +157,7 @@ impl App {
             let r = Rect::new(x, 15.0, cw, 26.0);
             fill_rrect(r, 13.0, Color::new(c.r, c.g, c.b, 0.13));
             stroke_rrect(r, 13.0, 1.0, Color::new(c.r, c.g, c.b, 0.30));
-            draw_circle(r.x + 11.0, r.y + 13.0, 4.0, *c);
+            fill_circle_aa(r.x + 11.0, r.y + 13.0, 4.0, *c);
             self.ui.text(s, r.x + 19.0, r.y + 17.5, 13.0, t.text);
             x -= 8.0;
         }
@@ -221,7 +221,7 @@ impl App {
             if running { t.good } else if pnhov { WHITE } else { t.accent_hi },
         );
         if running {
-            draw_circle(play_nav.x + 22.0, play_nav.y + 22.0, 5.0, t.good);
+            fill_circle_aa(play_nav.x + 22.0, play_nav.y + 22.0, 5.0, t.good);
             self.ui.btext("GAME RUNNING", play_nav.x + 36.0, play_nav.y + 27.5, 15.0, t.good);
         } else {
             let fg = if pnhov { Color::new(0.05, 0.06, 0.08, 1.0) } else { WHITE };
@@ -240,9 +240,9 @@ impl App {
         self.ui.text("this window.", dz.x + 12.0, dz.y + 80.0, 13.0, t.muted);
         let inst = self.lib.state.mods.len();
         let avail = self.lib.mods.iter().filter(|m| !m.installed).count();
-        draw_circle(r.x + 18.0, r.y + r.h - 36.0, 3.5, if inst > 0 { t.good } else { t.muted });
+        fill_circle_aa(r.x + 18.0, r.y + r.h - 36.0, 3.5, if inst > 0 { t.good } else { t.muted });
         self.ui.text(&format!("{} installed", inst), r.x + 27.0, r.y + r.h - 32.0, 14.0, if inst > 0 { t.good } else { t.muted });
-        draw_circle(r.x + 18.0, r.y + r.h - 18.0, 3.5, t.muted);
+        fill_circle_aa(r.x + 18.0, r.y + r.h - 18.0, 3.5, t.muted);
         self.ui.text(&format!("{} not installed", avail), r.x + 27.0, r.y + r.h - 14.0, 14.0, t.muted);
         self.drawn.push("nav");
     }
@@ -251,11 +251,11 @@ impl App {
         let t = *self.ui.theme();
         let r = Rect::new(0.0, h - 30.0, w, 30.0);
         draw_rectangle(r.x, r.y, r.w, r.h, t.status_bar);
-        draw_line(0.0, r.y, w, r.y, 1.0, t.line);
+        draw_line_aa(0.0, r.y, w, r.y, 1.0, t.line);
         let mut x = 14.0;
         if self.is_busy() {
             let phase = get_time() as f32 * 6.0;
-            draw_circle(x + 6.0 + phase.sin() * 3.0, r.y + 15.0, 4.0, t.accent_hi);
+            fill_circle_aa(x + 6.0 + phase.sin() * 3.0, r.y + 15.0, 4.0, t.accent_hi);
             // After 1 s the original shows "Installing mod! (%i/%i)" (function 0x14011d9e0).
             let (done, total) = (
                 self.job_progress.0.load(std::sync::atomic::Ordering::Relaxed),
@@ -366,10 +366,10 @@ impl App {
                     fill_rrect(rr, 6.0, Color::new(1.0, 1.0, 1.0, 0.04));
                 }
                 if m.installed {
-                    draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 7.0, Color::new(t.good.r, t.good.g, t.good.b, 0.22));
-                    draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 4.5, t.good);
+                    fill_circle_aa(rr.x + 17.0, rr.y + rr.h / 2.0, 7.0, Color::new(t.good.r, t.good.g, t.good.b, 0.22));
+                    fill_circle_aa(rr.x + 17.0, rr.y + rr.h / 2.0, 4.5, t.good);
                 } else {
-                    draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 4.5, Color::new(t.muted.r, t.muted.g, t.muted.b, 0.45));
+                    fill_circle_aa(rr.x + 17.0, rr.y + rr.h / 2.0, 4.5, Color::new(t.muted.r, t.muted.g, t.muted.b, 0.45));
                 }
                 let bw = 92.0;
                 let mut tx = rr.x + rr.w - bw - 12.0;
@@ -425,20 +425,20 @@ impl App {
         let mut x = dz.x + 10.0;
         while x < dz.x + dz.w - 10.0 {
             let x2 = (x + dash * 0.6).min(dz.x + dz.w - 10.0);
-            draw_line(x, dz.y, x2, dz.y, 1.8, col);
-            draw_line(x, dz.y + dz.h, x2, dz.y + dz.h, 1.8, col);
+            draw_line_aa(x, dz.y, x2, dz.y, 1.8, col);
+            draw_line_aa(x, dz.y + dz.h, x2, dz.y + dz.h, 1.8, col);
             x += dash;
         }
         let mut y = dz.y + 10.0;
-        while y < dz.y + dz.h - 10.0 {
+        while y < dz.h - 10.0 + dz.y {
             let y2 = (y + dash * 0.6).min(dz.y + dz.h - 10.0);
-            draw_line(dz.x, y, dz.x, y2, 1.8, col);
-            draw_line(dz.x + dz.w, y, dz.x + dz.w, y2, 1.8, col);
+            draw_line_aa(dz.x, y, dz.x, y2, 1.8, col);
+            draw_line_aa(dz.x + dz.w, y, dz.x + dz.w, y2, 1.8, col);
             y += dash;
         }
         let cx = dz.x + dz.w / 2.0;
         let cy = dz.y + dz.h / 2.0 - 44.0;
-        draw_circle(cx, cy - 4.0, 56.0, Color::new(t.accent.r, t.accent.g, t.accent.b, 0.08));
+        fill_circle_aa(cx, cy - 4.0, 56.0, Color::new(t.accent.r, t.accent.g, t.accent.b, 0.08));
         let tray = Rect::new(cx - 42.0, cy - 10.0, 84.0, 54.0);
         fill_rrect(tray, 10.0, t.accent_soft);
         stroke_rrect(tray, 10.0, 2.0, t.accent_hi);
@@ -482,7 +482,7 @@ impl App {
         let vis = self.visible();
         let Some(&mi) = vis.get(self.sel) else {
             self.ui.btext("How it works", r.x + 18.0, r.y + 36.0, 20.0, t.text);
-            draw_line(r.x + 18.0, r.y + 46.0, r.x + r.w - 18.0, r.y + 46.0, 1.0, t.line);
+            draw_line_aa(r.x + 18.0, r.y + 46.0, r.x + r.w - 18.0, r.y + 46.0, 1.0, t.line);
             let tips = [
                 "Install copies a mod's files into the game and backs up every original file first.",
                 "Uninstall puts the originals back exactly, even when two mods changed the same file.",
@@ -491,7 +491,7 @@ impl App {
             ];
             let mut y = r.y + 72.0;
             for tip in tips {
-                draw_circle(r.x + 24.0, y - 5.0, 3.5, t.accent_hi);
+                fill_circle_aa(r.x + 24.0, y - 5.0, 3.5, t.accent_hi);
                 y = self.ui.wrap(tip, r.x + 36.0, y, r.w - 54.0, 15.0, t.muted, 4) + 10.0;
             }
             self.drawn.push("detail");
@@ -662,7 +662,7 @@ impl App {
             ];
             let mut y = tips.y + 58.0;
             for l in lines {
-                draw_circle(tips.x + 24.0, y - 5.0, 3.5, t.accent_hi);
+                fill_circle_aa(tips.x + 24.0, y - 5.0, 3.5, t.accent_hi);
                 y = self.ui.wrap(l, tips.x + 36.0, y, tips.w - 60.0, 14.0, t.text, 3) + 6.0;
             }
             return;
@@ -688,7 +688,7 @@ impl App {
             self.ui.text(h, left.x + 16.0 + cols[i], y, 13.0, t.muted);
         }
         y += 8.0;
-        draw_line(left.x + 12.0, y, left.x + left.w - 12.0, y, 1.0, t.line);
+        draw_line_aa(left.x + 12.0, y, left.x + left.w - 12.0, y, 1.0, t.line);
         let mine = self.my_set();
         let mut rows: Vec<(String, Option<u32>, Option<bool>, bool, bool)> = Vec::new();
         if hosting {
@@ -769,7 +769,7 @@ impl App {
                 for (i, (s, good)) in items.iter().enumerate() {
                     let x = left.x + 16.0 + (i % 2) as f32 * 260.0;
                     let y2 = yy + 24.0 + (i / 2) as f32 * 22.0;
-                    draw_circle(x + 5.0, y2 - 5.0, 4.0, if *good { t.good } else { t.warn });
+                    fill_circle_aa(x + 5.0, y2 - 5.0, 4.0, if *good { t.good } else { t.warn });
                     self.ui.text(s, x + 16.0, y2, 14.0, t.text);
                 }
             }
@@ -907,7 +907,7 @@ impl App {
             let hov = self.ui.hover(br);
             fill_rrect(br, 6.0, if sel { th.accent_soft } else if hov { t.btn_hover } else { t.field_bg });
             stroke_rrect(br, 6.0, if sel { 1.5 } else { 1.0 }, if sel { th.accent_hi } else { t.line });
-            draw_circle(br.x + 13.0, br.y + 16.0, 5.0, th.accent_hi);
+            fill_circle_aa(br.x + 13.0, br.y + 16.0, 5.0, th.accent_hi);
             self.ui.text(th.name, br.x + 24.0, br.y + 21.0, 14.0, t.text);
             if self.ui.click(br) {
                 self.set_theme(idx);
@@ -957,7 +957,7 @@ impl App {
         // Modal top banner
         let banner = Rect::new(mx + 2.0, my + 2.0, mw - 4.0, 74.0);
         fill_rrect(banner, 10.0, t.top_bar);
-        draw_line(mx + 2.0, my + 76.0, mx + mw - 2.0, my + 76.0, 1.5, t.accent);
+        draw_line_aa(mx + 2.0, my + 76.0, mx + mw - 2.0, my + 76.0, 1.5, t.accent);
 
         if let Some(ic) = &self.ui.icon {
             draw_texture_ex(
