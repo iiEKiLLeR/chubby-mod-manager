@@ -8,3 +8,4 @@
 /assets/chubby_mod_manager_payload.exe
 /Chubby_Mod_Manager_Setup.exe
 /src/bin/*.exe
+/update.json

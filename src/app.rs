@@ -29,9 +29,7 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
-    ("GRAPHICS", "High-Definition Anti-Aliased UI: fixed pixelated and low-res buttons with smooth subpixel anti-aliasing across all UI shapes, borders, and vector icons"),
-    ("FIX", "Independent Update Check: clicking 'Check for Updates' now only checks for updates without unexpectedly opening the patch notes dialog"),
-    ("UI", "Dedicated View Patch Notes: patch notes are now only opened when explicitly clicking the 'View Patch Notes' button"),
+    ("UPDATER", "Self-Updating Fix: automatic update installer now cleanly terminates running manager instances, releases file locks, and updates custom install folders without getting stuck in a loop"),
 ];
 
 #[derive(Clone, Debug)]
@@ -382,6 +380,8 @@ impl App {
         let ver = upd.version.clone();
         let data_dir = self.data.join("Data");
         let cur_exe = std::env::current_exe().ok();
+        let cur_pid = std::process::id();
+        let cur_dir = cur_exe.as_ref().and_then(|p| p.parent().map(|p| p.to_path_buf()));
         self.run_job(&format!("Downloading update v{}", ver), move |lib| {
             let tmp_installer = data_dir.join(format!("Chubby_Update_{}.exe", ver));
             #[cfg(windows)]
@@ -407,12 +407,14 @@ impl App {
                 if !ok || !tmp_installer.is_file() {
                     return vec![Err(format!("Failed to download update v{} from {}", ver, url))];
                 }
-                let _ = std::process::Command::new(&tmp_installer)
-                    .creation_flags(0x0800_0000)
-                    .arg("--install-silent")
-                    .status();
-                if let Some(exe) = cur_exe {
-                    let _ = std::process::Command::new(exe).spawn();
+                let mut cmd = std::process::Command::new(&tmp_installer);
+                cmd.creation_flags(0x0800_0000);
+                cmd.arg("--install-silent");
+                if let Some(ref dir) = cur_dir {
+                    cmd.arg("--dir").arg(dir);
+                }
+                cmd.arg("--wait-pid").arg(cur_pid.to_string());
+                if cmd.spawn().is_ok() {
                     std::process::exit(0);
                 }
             }
@@ -1576,11 +1578,15 @@ pub fn build_update_manifest_json(download_url: &str) -> String {
 
 pub fn run_self_silent_install() {
     let Ok(src_exe) = std::env::current_exe() else { return };
-    let mut target_dir: Option<PathBuf> = None;
-    if let Some(parent) = src_exe.parent() {
-        if parent.file_name().map(|n| n.eq_ignore_ascii_case("Data")).unwrap_or(false) {
-            if let Some(grand) = parent.parent() {
-                target_dir = Some(grand.to_path_buf());
+    let args: Vec<String> = std::env::args().collect();
+    let arg_dir = args.windows(2).find(|w| w[0] == "--dir").map(|w| PathBuf::from(&w[1]));
+    let mut target_dir: Option<PathBuf> = arg_dir;
+    if target_dir.is_none() {
+        if let Some(parent) = src_exe.parent() {
+            if parent.file_name().map(|n| n.eq_ignore_ascii_case("Data")).unwrap_or(false) {
+                if let Some(grand) = parent.parent() {
+                    target_dir = Some(grand.to_path_buf());
+                }
             }
         }
     }
@@ -1609,12 +1615,28 @@ pub fn run_self_silent_install() {
     let _ = std::fs::create_dir_all(&dir);
     let exe_path = dir.join("Chubby Mod Manager.exe");
     let old_exe_path = dir.join("Chubby Mod Manager.exe.old");
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill.exe")
+            .creation_flags(0x0800_0000)
+            .args(["/F", "/IM", "Chubby Mod Manager.exe"])
+            .status();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+
     if exe_path.exists() && exe_path != src_exe {
         let _ = std::fs::remove_file(&old_exe_path);
         let _ = std::fs::rename(&exe_path, &old_exe_path);
     }
     if exe_path != src_exe {
-        let _ = std::fs::copy(&src_exe, &exe_path);
+        for _ in 0..25 {
+            if std::fs::copy(&src_exe, &exe_path).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     }
     #[cfg(windows)]
     {

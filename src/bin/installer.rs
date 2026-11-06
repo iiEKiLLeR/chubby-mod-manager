@@ -43,21 +43,26 @@ theme: umbrella_crimson
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 fn default_install_dir() -> PathBuf {
-    if let Ok(out) = Command::new("powershell.exe")
+    if let Ok(out) = Command::new("reg.exe")
         .creation_flags(CREATE_NO_WINDOW)
         .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ChubbyModManager' -Name InstallLocation -ErrorAction SilentlyContinue).InstallLocation",
+            "query",
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ChubbyModManager",
+            "/v",
+            "InstallLocation",
         ])
         .output()
     {
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !s.is_empty() {
-            return PathBuf::from(s);
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            for line in s.lines() {
+                if let Some(pos) = line.find("REG_SZ") {
+                    let val = line[pos + 6..].trim();
+                    if !val.is_empty() {
+                        return PathBuf::from(val);
+                    }
+                }
+            }
         }
     }
     if let Ok(local) = env::var("LOCALAPPDATA") {
@@ -65,6 +70,98 @@ fn default_install_dir() -> PathBuf {
     } else {
         PathBuf::from("C:\\Chubby Mod Manager")
     }
+}
+
+fn running_manager_info() -> Option<(u32, PathBuf)> {
+    unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot.is_null() {
+            return None;
+        }
+
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        let mut found = None;
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                let len = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                if name.eq_ignore_ascii_case("Chubby Mod Manager.exe") {
+                    let pid = entry.th32ProcessID;
+                    let p_handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                    if !p_handle.is_null() {
+                        let mut buf = [0u16; 1024];
+                        let mut size = buf.len() as u32;
+                        if QueryFullProcessImageNameW(
+                            p_handle,
+                            0,
+                            buf.as_mut_ptr(),
+                            &mut size,
+                        ) != 0 {
+                            let path_str = String::from_utf16_lossy(&buf[..size as usize]);
+                            found = Some((pid, PathBuf::from(path_str)));
+                        }
+                        CloseHandle(p_handle);
+                    }
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+        found
+    }
+}
+
+fn terminate_pid_native(pid: u32) {
+    unsafe {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+            PROCESS_TERMINATE,
+        };
+        use windows_sys::Win32::Foundation::CloseHandle;
+        let h = OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid);
+        if !h.is_null() {
+            let _ = TerminateProcess(h, 0);
+            let _ = WaitForSingleObject(h, 2000);
+            let _ = CloseHandle(h);
+        }
+    }
+}
+
+fn terminate_manager_processes(wait_pid: Option<u32>) {
+    if let Some(pid) = wait_pid {
+        terminate_pid_native(pid);
+    }
+    if let Some((pid, _)) = running_manager_info() {
+        terminate_pid_native(pid);
+    }
+    let _ = Command::new("taskkill.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args(["/F", "/IM", "Chubby Mod Manager.exe"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
 }
 
 fn desktop_dir() -> PathBuf {
@@ -183,6 +280,23 @@ fn create_shortcut(lnk_path: &Path, target_exe: &Path, work_dir: &Path, icon_pat
     }
 }
 
+fn reg_add(name: &str, val: &str) {
+    let _ = Command::new("reg.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args([
+            "add",
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ChubbyModManager",
+            "/v",
+            name,
+            "/d",
+            val,
+            "/f",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 fn perform_install(install_dir: &Path, make_desktop: bool, make_start_menu: bool) -> Result<PathBuf, String> {
     if install_dir.as_os_str().is_empty() {
         return Err("Please enter or browse for a valid installation path.".into());
@@ -194,10 +308,31 @@ fn perform_install(install_dir: &Path, make_desktop: bool, make_start_menu: bool
     let exe_path = install_dir.join("Chubby Mod Manager.exe");
     let old_exe = install_dir.join("Chubby Mod Manager.exe.old");
     let _ = fs::remove_file(&old_exe);
+
+    // Make sure running manager instances are closed so the executable file is unlocked
+    terminate_manager_processes(None);
+
     if exe_path.exists() {
         let _ = fs::rename(&exe_path, &old_exe);
     }
-    fs::write(&exe_path, PAYLOAD_EXE).map_err(|e| format!("Cannot write {}: {}", exe_path.display(), e))?;
+
+    // Write PAYLOAD_EXE with retry loop to allow lingering OS file locks / antivirus scans to clear
+    let mut write_err = None;
+    for _ in 0..25 {
+        match fs::write(&exe_path, PAYLOAD_EXE) {
+            Ok(_) => {
+                write_err = None;
+                break;
+            }
+            Err(e) => {
+                write_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+    }
+    if let Some(e) = write_err {
+        return Err(format!("Cannot write {}: {}", exe_path.display(), e));
+    }
     let _ = fs::remove_file(&old_exe);
     let _ = fs::write(install_dir.join("unrar.dll"), PAYLOAD_UNRAR);
 
@@ -237,79 +372,12 @@ echo Chubby Mod Manager shortcuts removed.\r\n";
         );
     }
 
-    let _ = Command::new("reg.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "add",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ChubbyModManager",
-            "/v",
-            "DisplayName",
-            "/d",
-            "Chubby Mod Manager",
-            "/f",
-        ])
-        .status();
-    let _ = Command::new("reg.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "add",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ChubbyModManager",
-            "/v",
-            "InstallLocation",
-            "/d",
-            &install_dir.display().to_string(),
-            "/f",
-        ])
-        .status();
-    let _ = Command::new("reg.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "add",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ChubbyModManager",
-            "/v",
-            "DisplayIcon",
-            "/d",
-            &exe_path.display().to_string(),
-            "/f",
-        ])
-        .status();
-    let _ = Command::new("reg.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "add",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ChubbyModManager",
-            "/v",
-            "Publisher",
-            "/d",
-            "Chubby Mod Manager",
-            "/f",
-        ])
-        .status();
-    let _ = Command::new("reg.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "add",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ChubbyModManager",
-            "/v",
-            "UninstallString",
-            "/d",
-            &uninst_cmd.display().to_string(),
-            "/f",
-        ])
-        .status();
-
-    let _ = Command::new("reg.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "add",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ChubbyModManager",
-            "/v",
-            "DisplayVersion",
-            "/d",
-            VERSION,
-            "/f",
-        ])
-        .status();
+    reg_add("DisplayName", "Chubby Mod Manager");
+    reg_add("InstallLocation", &install_dir.display().to_string());
+    reg_add("DisplayIcon", &exe_path.display().to_string());
+    reg_add("Publisher", "Chubby Mod Manager");
+    reg_add("UninstallString", &uninst_cmd.display().to_string());
+    reg_add("DisplayVersion", VERSION);
 
     Ok(exe_path)
 }
@@ -389,16 +457,33 @@ fn has_flag(flag: &str) -> bool {
 
 #[macroquad::main(conf)]
 async fn main() {
+    let running_info = running_manager_info();
+    let wait_pid: Option<u32> = arg_value("--wait-pid").and_then(|s| s.parse().ok());
+
     let mut path_input = arg_value("--dir")
+        .or_else(|| running_info.as_ref().and_then(|(_, p)| p.parent().map(|d| d.display().to_string())))
         .unwrap_or_else(|| default_install_dir().display().to_string());
 
     if has_flag("--install-silent") {
-        let target = PathBuf::from(path_input.trim());
-        if let Err(e) = perform_install(&target, true, true) {
-            eprintln!("{}", e);
-            std::process::exit(1);
+        if let Some(pid) = wait_pid {
+            terminate_manager_processes(Some(pid));
+        } else if running_info.is_some() {
+            terminate_manager_processes(None);
         }
-        std::process::exit(0);
+
+        let target = PathBuf::from(path_input.trim());
+        match perform_install(&target, true, true) {
+            Ok(exe) => {
+                if !has_flag("--no-launch") {
+                    let _ = Command::new(&exe).current_dir(&target).spawn();
+                }
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
     }
 
     unsafe {
