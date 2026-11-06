@@ -29,9 +29,9 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
-    ("FIX", "Crisp High-DPI Resolution: enabled native High-DPI rendering and Per-Monitor v2 DPI awareness to eliminate all pixelation and blurriness"),
-    ("FIX", "Smooth Font Antialiasing: enabled bilinear font atlas filtering for razor-sharp typography on 1080p, 1440p, and 4K displays"),
-    ("FIX", "High-Definition Geometry: upgraded rounded rectangle corner subdivision and 4x multisample antialiasing (MSAA) across the entire interface"),
+    ("PERF", "Fixed Severe Co-op Frame Drops (90 -> 30 FPS): removed unstable managed SDK singleton caching that caused 100+ internal game exceptions"),
+    ("PERF", "Optimized Co-op Sync Rate: balanced enemy animation sync to 30 Hz to eliminate packet flooding and CPU lag during combat with many enemies"),
+    ("PERF", "Eliminated Game Loop Reflection & Disk I/O: converted pause protection to event-driven hooks and removed synchronous JSON disk polling from the render loop"),
 ];
 
 #[derive(Clone, Debug)]
@@ -476,8 +476,13 @@ impl App {
             "{{\"id\":\"{}\",\"name\":\"{}\",\"accent_abgr\":{}}}\n",
             t.id, t.name, abgr
         );
-        // Ensure 60 Hz enemy animation & partner animation so zombies don't look like 10-20 FPS on partner side
-        let hz_60_json = "{\"master\":60,\"partner_pos\":60,\"partner_rot\":60,\"partner_anim\":60,\"partner_wpn\":30,\"enemy_pos\":60,\"enemy_anim\":60,\"enemy_vitals\":30,\"flag_gimmick\":15}\n";
+        // Optimal default sync rates:
+        // - 60 Hz partner position & rotation for smooth character movement
+        // - 30 Hz partner animation & weapon
+        // - 60 Hz enemy position (smooth ground movement)
+        // - 30 Hz enemy animation & vitals (prevents network/CPU flood in combat with 20+ enemies)
+        // - 15 Hz flag/gimmick (stops area transition stutter)
+        let hz_opt_json = "{\"master\":60,\"partner_pos\":60,\"partner_rot\":60,\"partner_anim\":30,\"partner_wpn\":30,\"enemy_pos\":60,\"enemy_anim\":30,\"enemy_vitals\":30,\"flag_gimmick\":15}\n";
 
         for root in &roots {
             let ref_dll = root.join("dinput8.dll");
@@ -500,11 +505,11 @@ impl App {
                 let _ = fsx::write_atomic(&data_dir.join("chubby_theme.json"), theme_json.as_bytes());
                 let hz_path = data_dir.join("RE4MP_hz.json");
                 let needs_hz_write = match std::fs::read_to_string(&hz_path) {
-                    Ok(existing) => existing.contains("\"enemy_anim\":30") || existing.contains("\"partner_anim\":30"),
+                    Ok(existing) => existing.contains("\"enemy_anim\":60") || !existing.contains("\"enemy_anim\":30"),
                     Err(_) => true,
                 };
                 if needs_hz_write {
-                    let _ = fsx::write_atomic(&hz_path, hz_60_json.as_bytes());
+                    let _ = fsx::write_atomic(&hz_path, hz_opt_json.as_bytes());
                 }
                 // Keep the Chubby Co-op fix script up to date wherever the mod is installed.
                 let lua_path = root.join("reframework").join("autorun").join("!chubby_coop_fix.lua");
@@ -1376,10 +1381,10 @@ pub fn patch_coop_dll_bytes(buf: &mut [u8], t: &Theme) -> bool {
     write_i32_le(buf, 1319404, 2); // master: 60Hz
     write_i32_le(buf, 1320576, 2); // partner_pos: 60Hz
     write_i32_le(buf, 1320580, 2); // partner_rot: 60Hz
-    write_i32_le(buf, 1320584, 2); // partner_anim: 60Hz
+    write_i32_le(buf, 1320584, 1); // partner_anim: 30Hz
     write_i32_le(buf, 1320588, 1); // partner_wpn: 30Hz
     write_i32_le(buf, 1320592, 2); // enemy_pos: 60Hz
-    write_i32_le(buf, 1320596, 2); // enemy_anim: 60Hz (was 30Hz: enemies looked choppy on the partner's side)
+    write_i32_le(buf, 1320596, 1); // enemy_anim: 30Hz (was 60Hz: 60Hz flooded CPU and dropped FPS from 90 to 30)
     write_i32_le(buf, 1320600, 1); // enemy_vitals: 30Hz
     write_i32_le(buf, 1320604, 0); // flag_gimmick: 15Hz
 

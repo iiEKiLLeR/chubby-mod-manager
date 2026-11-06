@@ -215,38 +215,68 @@ pub fn fill_rrect(r: Rect, rad: f32, c: Color) {
     }
 }
 
-/// Crisp rounded rectangle outline.
+/// Crisp, seamless rounded rectangle outline rendered as a continuous connected quad ribbon.
 pub fn stroke_rrect(r: Rect, rad: f32, thickness: f32, c: Color) {
     let rad = rad.min(r.w * 0.5).min(r.h * 0.5).max(0.0);
     if rad <= 0.5 {
         draw_rectangle_lines(r.x, r.y, r.w, r.h, thickness, c);
         return;
     }
-    draw_line(r.x + rad, r.y, r.x + r.w - rad, r.y, thickness, c);
-    draw_line(r.x + rad, r.y + r.h, r.x + r.w - rad, r.y + r.h, thickness, c);
-    draw_line(r.x, r.y + rad, r.x, r.y + r.h - rad, thickness, c);
-    draw_line(r.x + r.w, r.y + rad, r.x + r.w, r.y + r.h - rad, thickness, c);
+
+    let half_t = thickness * 0.5;
+    let r_in = (rad - half_t).max(0.0);
+    let r_out = rad + half_t;
+
+    // Corner centers: [top-right, bottom-right, bottom-left, top-left] clockwise
     let corners = [
-        (r.x + rad, r.y + rad, std::f32::consts::PI, std::f32::consts::FRAC_PI_2 * 3.0),
-        (r.x + r.w - rad, r.y + rad, std::f32::consts::FRAC_PI_2 * 3.0, std::f32::consts::TAU),
+        (r.x + r.w - rad, r.y + rad, -std::f32::consts::FRAC_PI_2, 0.0),
         (r.x + r.w - rad, r.y + r.h - rad, 0.0, std::f32::consts::FRAC_PI_2),
         (r.x + rad, r.y + r.h - rad, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),
+        (r.x + rad, r.y + rad, std::f32::consts::PI, std::f32::consts::FRAC_PI_2 * 3.0),
     ];
-    let steps = 14;
+
+    let steps = 16;
     for (cx, cy, a0, a1) in corners {
         for i in 0..steps {
             let t0 = a0 + (a1 - a0) * (i as f32 / steps as f32);
             let t1 = a0 + (a1 - a0) * ((i + 1) as f32 / steps as f32);
-            draw_line(
-                cx + t0.cos() * rad,
-                cy + t0.sin() * rad,
-                cx + t1.cos() * rad,
-                cy + t1.sin() * rad,
-                thickness,
-                c,
-            );
+            let in0 = vec2(cx + t0.cos() * r_in, cy + t0.sin() * r_in);
+            let out0 = vec2(cx + t0.cos() * r_out, cy + t0.sin() * r_out);
+            let in1 = vec2(cx + t1.cos() * r_in, cy + t1.sin() * r_in);
+            let out1 = vec2(cx + t1.cos() * r_out, cy + t1.sin() * r_out);
+            draw_triangle(in0, out0, out1, c);
+            draw_triangle(in0, out1, in1, c);
         }
     }
+
+    let x_left = r.x + rad;
+    let x_right = r.x + r.w - rad;
+    let y_top = r.y + rad;
+    let y_bot = r.y + r.h - rad;
+
+    // Top edge: connects top-left corner end (3*PI/2) to top-right corner start (-PI/2)
+    let top_y_in = r.y + rad - r_in;
+    let top_y_out = r.y + rad - r_out;
+    draw_triangle(vec2(x_left, top_y_in), vec2(x_left, top_y_out), vec2(x_right, top_y_out), c);
+    draw_triangle(vec2(x_left, top_y_in), vec2(x_right, top_y_out), vec2(x_right, top_y_in), c);
+
+    // Right edge: connects top-right corner end (0) to bottom-right corner start (0)
+    let right_x_in = r.x + r.w - rad + r_in;
+    let right_x_out = r.x + r.w - rad + r_out;
+    draw_triangle(vec2(right_x_in, y_top), vec2(right_x_out, y_top), vec2(right_x_out, y_bot), c);
+    draw_triangle(vec2(right_x_in, y_top), vec2(right_x_out, y_bot), vec2(right_x_in, y_bot), c);
+
+    // Bottom edge: connects bottom-right corner end (PI/2) to bottom-left corner start (PI/2)
+    let bot_y_in = r.y + r.h - rad + r_in;
+    let bot_y_out = r.y + r.h - rad + r_out;
+    draw_triangle(vec2(x_left, bot_y_in), vec2(x_left, bot_y_out), vec2(x_right, bot_y_out), c);
+    draw_triangle(vec2(x_left, bot_y_in), vec2(x_right, bot_y_out), vec2(x_right, bot_y_in), c);
+
+    // Left edge: connects bottom-left corner end (PI) to top-left corner start (PI)
+    let left_x_in = r.x + rad - r_in;
+    let left_x_out = r.x + rad - r_out;
+    draw_triangle(vec2(left_x_in, y_top), vec2(left_x_out, y_top), vec2(left_x_out, y_bot), c);
+    draw_triangle(vec2(left_x_in, y_top), vec2(left_x_out, y_bot), vec2(left_x_in, y_bot), c);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -266,6 +296,7 @@ pub struct Ui {
     pub font: Option<Font>,
     pub bold: Option<Font>,
     pub icon: Option<Texture2D>,
+    pub play_icon: Option<Texture2D>,
     pub mouse: Vec2,
     pub pressed: bool,
     pub consumed: bool,
@@ -295,7 +326,35 @@ impl Ui {
             tex.set_filter(FilterMode::Linear);
             tex
         });
-        Ui { font, bold, icon, ..Ui::new_light() }
+        let play_icon = {
+            const SIZE: usize = 32;
+            let mut pixels = vec![0u8; SIZE * SIZE * 4];
+            let len = (20.0f32 * 20.0 + 12.0 * 12.0).sqrt();
+            let nx1 = -12.0 / len;
+            let ny1 = 20.0 / len;
+            let nx2 = -12.0 / len;
+            let ny2 = -20.0 / len;
+            for y in 0..SIZE {
+                for x in 0..SIZE {
+                    let px = x as f32 + 0.5;
+                    let py = y as f32 + 0.5;
+                    let d0 = px - 6.0;
+                    let d1 = nx1 * (px - 6.0) + ny1 * (py - 4.0);
+                    let d2 = nx2 * (px - 6.0) + ny2 * (py - 28.0);
+                    let d = d0.min(d1.min(d2));
+                    let a = (d + 0.5).clamp(0.0, 1.0);
+                    let idx = (y * SIZE + x) * 4;
+                    pixels[idx] = 255;
+                    pixels[idx + 1] = 255;
+                    pixels[idx + 2] = 255;
+                    pixels[idx + 3] = (a * 255.0).round() as u8;
+                }
+            }
+            let tex = Texture2D::from_rgba8(SIZE as u16, SIZE as u16, &pixels);
+            tex.set_filter(FilterMode::Linear);
+            Some(tex)
+        };
+        Ui { font, bold, icon, play_icon, ..Ui::new_light() }
     }
 
     /// Widgets without fonts (used by the self-test probe).
@@ -304,6 +363,7 @@ impl Ui {
             font: None,
             bold: None,
             icon: None,
+            play_icon: None,
             mouse: vec2(-1.0, -1.0),
             pressed: false,
             consumed: false,
@@ -344,6 +404,21 @@ impl Ui {
             true
         } else {
             false
+        }
+    }
+
+    pub fn play_icon(&self, x: f32, y: f32, size: f32, c: Color) {
+        if let Some(tex) = &self.play_icon {
+            draw_texture_ex(
+                tex,
+                x,
+                y,
+                c,
+                DrawTextureParams {
+                    dest_size: Some(vec2(size, size)),
+                    ..Default::default()
+                },
+            );
         }
     }
 

@@ -183,6 +183,16 @@ fn limit_frame(mode: i64, fps: f64, accurate: bool, sleep_cost_ms: f64, frame_st
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    unsafe {
+        #[link(name = "opengl32")]
+        unsafe extern "system" {
+            fn glEnable(cap: u32);
+            fn glHint(target: u32, mode: u32);
+        }
+        glEnable(0x809D); // GL_MULTISAMPLE
+        glEnable(0x0B20); // GL_LINE_SMOOTH
+        glHint(0x0C52, 0x1102); // GL_LINE_SMOOTH_HINT -> GL_NICEST
+    }
     let shot = arg_value("--screenshot");
     let test = arg_value("--self-test");
     let headless = shot.is_some() || test.is_some();
@@ -252,7 +262,7 @@ async fn main() {
             }
         }
         if let Some(p) = &shot {
-            if (app.frame >= 120 && !app.is_busy()) || app.frame >= 900 {
+            if (app.frame >= 60 && !app.is_busy()) || app.frame >= 300 {
                 let img = get_screen_data();
                 if let Some(dir) = Path::new(p).parent() {
                     let _ = std::fs::create_dir_all(dir);

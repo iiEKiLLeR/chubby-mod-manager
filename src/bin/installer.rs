@@ -401,6 +401,17 @@ async fn main() {
         std::process::exit(0);
     }
 
+    unsafe {
+        #[link(name = "opengl32")]
+        unsafe extern "system" {
+            fn glEnable(cap: u32);
+            fn glHint(target: u32, mode: u32);
+        }
+        glEnable(0x809D);
+        glEnable(0x0B20);
+        glHint(0x0C52, 0x1102);
+    }
+
     let shot_path = arg_value("--screenshot");
     let badge = Texture2D::from_file_with_format(APP_ICON_JPG, Some(ImageFormat::Jpeg));
     badge.set_filter(FilterMode::Linear);

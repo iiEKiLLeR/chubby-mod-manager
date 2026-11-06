@@ -116,12 +116,7 @@ impl App {
             self.ui.btext("PLAYING", play_r.x + 25.0, play_r.y + 21.5, 13.5, t.good);
         } else {
             let tri_col = if play_hov { Color::new(0.05, 0.06, 0.08, 1.0) } else { WHITE };
-            draw_triangle(
-                vec2(play_r.x + 14.0, play_r.y + 10.0),
-                vec2(play_r.x + 14.0, play_r.y + 22.0),
-                vec2(play_r.x + 25.0, play_r.y + 16.0),
-                tri_col,
-            );
+            self.ui.play_icon(play_r.x + 15.0, play_r.y + 10.0, 12.0, tri_col);
             self.ui.btext("PLAY", play_r.x + 32.0, play_r.y + 22.0, 15.0, tri_col);
             if !busy && self.ui.click(play_r) {
                 self.launch_game();
@@ -230,13 +225,8 @@ impl App {
             self.ui.btext("GAME RUNNING", play_nav.x + 36.0, play_nav.y + 27.5, 15.0, t.good);
         } else {
             let fg = if pnhov { Color::new(0.05, 0.06, 0.08, 1.0) } else { WHITE };
-            draw_triangle(
-                vec2(play_nav.x + 22.0, play_nav.y + 14.0),
-                vec2(play_nav.x + 22.0, play_nav.y + 30.0),
-                vec2(play_nav.x + 36.0, play_nav.y + 22.0),
-                fg,
-            );
-            self.ui.btext("PLAY GAME", play_nav.x + 46.0, play_nav.y + 28.0, 16.5, fg);
+            self.ui.play_icon(play_nav.x + 22.0, play_nav.y + 14.0, 16.0, fg);
+            self.ui.btext("PLAY GAME", play_nav.x + 44.0, play_nav.y + 28.0, 16.5, fg);
             if !busy && self.ui.click(play_nav) {
                 self.launch_game();
             }
@@ -925,53 +915,29 @@ impl App {
             tx += bw + 8.0;
         }
 
-        self.ui.btext("Performance and behaviour", right.x + 18.0, right.y + 32.0, 18.0, t.text);
-        let toggles: [(&str, &str); 8] = [
-            ("SleepWhileGameRuns", "Sleep while the game runs (2 fps, low priority)"),
-            ("MinimizeWhenGameStarts", "Minimize this window when the game starts"),
-            ("ExitWhenGameStarts", "Close completely when the game starts (not in co-op)"),
-            ("BoostGamePriority", "Give the game a higher CPU priority"),
-            ("PauseTransfersDuringGame", "Pause co-op mod downloads while the host plays"),
-            ("WatchModsFolder", "Show new files in the Mods folder automatically"),
-            ("AutoDeleteBackupFiles", "Delete backups once originals are restored"),
-            ("ShowModPreviewScreenshots", "Show mod screenshots"),
-        ];
+        self.ui.btext("Window Behaviour", right.x + 18.0, right.y + 32.0, 18.0, t.text);
         let mut y = right.y + 48.0;
-        for (key, label) in toggles {
-            if self.ui.toggle(Rect::new(right.x + 10.0, y, right.w - 20.0, 34.0), label, self.cfg.flag(key)) {
-                self.cfg.toggle(key);
-                self.cfg.save();
-                self.lib.auto_delete_backups = self.cfg.flag("AutoDeleteBackupFiles");
-            }
-            y += 38.0;
-        }
-        y += 10.0;
-        let fps = self.cfg.get_i("MaxFPS");
-        self.ui.text(&format!("Frame limit while in front: {} fps", fps), right.x + 18.0, y + 22.0, 15.0, t.text);
-        if self.ui.button(Rect::new(right.x + right.w - 90.0, y + 4.0, 34.0, 28.0), "-", 0, fps > 20) {
-            self.cfg.set("MaxFPS", fps - 10);
+        if self.ui.toggle(
+            Rect::new(right.x + 10.0, y, right.w - 20.0, 34.0),
+            "Minimize this window when the game starts",
+            self.cfg.flag("MinimizeWhenGameStarts"),
+        ) {
+            self.cfg.toggle("MinimizeWhenGameStarts");
             self.cfg.save();
         }
-        if self.ui.button(Rect::new(right.x + right.w - 50.0, y + 4.0, 34.0, 28.0), "+", 0, fps < 240) {
-            self.cfg.set("MaxFPS", fps + 10);
-            self.cfg.save();
-        }
-        y += 38.0;
-        self.ui.btext("Updates & Patch Notes", right.x + 18.0, y + 18.0, 16.0, t.text);
-        let mut uurl = self.fields.remove(&Field::UpdateUrl).unwrap_or_default();
-        self.ui.field(
-            Rect::new(right.x + 18.0, y + 26.0, right.w - 36.0, 32.0),
-            Field::UpdateUrl,
-            &mut uurl,
-            "Optional update.json URL (GitHub raw / Gist / direct link)",
-        );
-        self.fields.insert(Field::UpdateUrl, uurl);
-        if self.ui.button(Rect::new(right.x + 18.0, y + 66.0, 175.0, 32.0), "Check for Updates", 1, true) {
+        y += 60.0;
+
+        self.ui.btext("Updates & Patch Notes", right.x + 18.0, y + 18.0, 18.0, t.text);
+        y += 36.0;
+        if self.ui.button(Rect::new(right.x + 18.0, y, 180.0, 36.0), "Check for Updates", 1, true) {
             self.check_for_updates(true);
         }
-        if self.ui.button(Rect::new(right.x + 201.0, y + 66.0, 175.0, 32.0), "View Patch Notes", 2, true) {
+        if self.ui.button(Rect::new(right.x + 208.0, y, 180.0, 36.0), "View Patch Notes", 2, true) {
             self.show_update_modal = true;
         }
+        y += 48.0;
+        let st = self.ui.fit(&self.update_status, 14.0, right.w - 36.0);
+        self.ui.text(&st, right.x + 18.0, y, 14.0, t.muted);
         self.drawn.push("options");
     }
 
