@@ -42,7 +42,42 @@ fn app_icon() -> Option<macroquad::miniquad::conf::Icon> {
     Some(macroquad::miniquad::conf::Icon { small, medium, big })
 }
 
+fn enable_dpi_awareness() {
+    unsafe {
+        use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+        let user32 = GetModuleHandleA(b"user32.dll\0".as_ptr());
+        if !user32.is_null() {
+            let func = GetProcAddress(user32, b"SetProcessDpiAwarenessContext\0".as_ptr());
+            if let Some(set_dpi) = func {
+                // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4 as isize
+                let set_dpi: extern "system" fn(isize) -> i32 =
+                    std::mem::transmute(set_dpi);
+                let _ = set_dpi(-4);
+            }
+        }
+    }
+}
+
+fn get_system_dpi_scale() -> f32 {
+    unsafe {
+        use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+        let user32 = GetModuleHandleA(b"user32.dll\0".as_ptr());
+        if !user32.is_null() {
+            let func = GetProcAddress(user32, b"GetDpiForSystem\0".as_ptr());
+            if let Some(get_dpi) = func {
+                let get_dpi: extern "system" fn() -> u32 = std::mem::transmute(get_dpi);
+                let dpi = get_dpi();
+                if dpi > 0 {
+                    return dpi as f32 / 96.0;
+                }
+            }
+        }
+    }
+    1.0
+}
+
 fn window_conf() -> Conf {
+    enable_dpi_awareness();
     if std::env::args().any(|a| a == "--install-silent") {
         app::run_self_silent_install();
         std::process::exit(0);
@@ -56,13 +91,23 @@ fn window_conf() -> Conf {
     let data = arg_value("--data").map(PathBuf::from).unwrap_or_else(exe_dir);
     let cfg = Config::load(&data.join("Data").join("config.cfg"));
     let headless = arg_value("--screenshot").is_some() || arg_value("--self-test").is_some();
-    let (w, h) = if headless { (1280, 720) } else { (cfg.get_i("win_width").clamp(1100, 3840) as i32, cfg.get_i("win_height").clamp(640, 2160) as i32) };
+    let (w, h) = if headless {
+        (1280, 720)
+    } else {
+        (
+            cfg.get_i("win_width").clamp(1100, 3840) as i32,
+            cfg.get_i("win_height").clamp(640, 2160) as i32,
+        )
+    };
+    let scale = if headless { 1.0 } else { get_system_dpi_scale().max(1.0) };
+    let win_w = (w as f32 * scale).round() as i32;
+    let win_h = (h as f32 * scale).round() as i32;
     Conf {
         window_title: TITLE.to_string(),
-        window_width: w,
-        window_height: h,
+        window_width: win_w,
+        window_height: win_h,
         window_resizable: true,
-        high_dpi: false,
+        high_dpi: true,
         sample_count: 4,
         icon: app_icon(),
         ..Default::default()

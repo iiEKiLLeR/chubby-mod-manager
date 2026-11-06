@@ -202,7 +202,7 @@ pub fn fill_rrect(r: Rect, rad: f32, c: Color) {
         (r.x + r.w - rad, r.y + r.h - rad, 0.0, std::f32::consts::FRAC_PI_2),
         (r.x + rad, r.y + r.h - rad, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),
     ];
-    let steps = 6;
+    let steps = 14;
     for (cx, cy, a0, a1) in corners {
         let center = vec2(cx, cy);
         for i in 0..steps {
@@ -232,7 +232,7 @@ pub fn stroke_rrect(r: Rect, rad: f32, thickness: f32, c: Color) {
         (r.x + r.w - rad, r.y + r.h - rad, 0.0, std::f32::consts::FRAC_PI_2),
         (r.x + rad, r.y + r.h - rad, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),
     ];
-    let steps = 6;
+    let steps = 14;
     for (cx, cy, a0, a1) in corners {
         for i in 0..steps {
             let t0 = a0 + (a1 - a0) * (i as f32 / steps as f32);
@@ -278,9 +278,17 @@ pub struct Ui {
 
 impl Ui {
     pub fn new() -> Ui {
-        let load = |p: &str| std::fs::read(p).ok().and_then(|b| load_ttf_font_from_bytes(&b).ok());
-        let font = load("C:/Windows/Fonts/segoeui.ttf");
-        let bold = load("C:/Windows/Fonts/segoeuib.ttf").or_else(|| font.clone());
+        let win_dir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let load = |name: &str| {
+            let p = format!("{}\\Fonts\\{}", win_dir, name);
+            std::fs::read(&p).ok().and_then(|b| {
+                let mut f = load_ttf_font_from_bytes(&b).ok()?;
+                f.set_filter(FilterMode::Linear);
+                Some(f)
+            })
+        };
+        let font = load("segoeui.ttf").or_else(|| load("arial.ttf")).or_else(|| load("tahoma.ttf"));
+        let bold = load("segoeuib.ttf").or_else(|| load("arialbd.ttf")).or_else(|| font.clone());
         let icon = image::load_from_memory(APP_ICON_JPG).ok().map(|img| {
             let rgba = img.resize_exact(128, 128, image::imageops::FilterType::Lanczos3).to_rgba8();
             let tex = Texture2D::from_rgba8(rgba.width() as u16, rgba.height() as u16, rgba.as_raw());

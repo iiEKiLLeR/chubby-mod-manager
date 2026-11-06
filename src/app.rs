@@ -29,8 +29,9 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
-    ("NEW", "Release notes modal now strictly displays only the newest fixes and changes for the current version"),
-    ("FIX", "Removed all legacy historical notes from previous versions to keep the update window concise"),
+    ("FIX", "Crisp High-DPI Resolution: enabled native High-DPI rendering and Per-Monitor v2 DPI awareness to eliminate all pixelation and blurriness"),
+    ("FIX", "Smooth Font Antialiasing: enabled bilinear font atlas filtering for razor-sharp typography on 1080p, 1440p, and 4K displays"),
+    ("FIX", "High-Definition Geometry: upgraded rounded rectangle corner subdivision and 4x multisample antialiasing (MSAA) across the entire interface"),
 ];
 
 #[derive(Clone, Debug)]

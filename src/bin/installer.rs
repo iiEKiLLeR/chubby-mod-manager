@@ -331,11 +331,45 @@ fn load_window_icon() -> Option<miniquad::conf::Icon> {
     })
 }
 
+fn enable_dpi_awareness() {
+    unsafe {
+        use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+        let user32 = GetModuleHandleA(b"user32.dll\0".as_ptr());
+        if !user32.is_null() {
+            let func = GetProcAddress(user32, b"SetProcessDpiAwarenessContext\0".as_ptr());
+            if let Some(set_dpi) = func {
+                let set_dpi: extern "system" fn(isize) -> i32 = std::mem::transmute(set_dpi);
+                let _ = set_dpi(-4);
+            }
+        }
+    }
+}
+
+fn get_system_dpi_scale() -> f32 {
+    unsafe {
+        use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+        let user32 = GetModuleHandleA(b"user32.dll\0".as_ptr());
+        if !user32.is_null() {
+            let func = GetProcAddress(user32, b"GetDpiForSystem\0".as_ptr());
+            if let Some(get_dpi) = func {
+                let get_dpi: extern "system" fn() -> u32 = std::mem::transmute(get_dpi);
+                let dpi = get_dpi();
+                if dpi > 0 {
+                    return dpi as f32 / 96.0;
+                }
+            }
+        }
+    }
+    1.0
+}
+
 fn conf() -> Conf {
+    enable_dpi_awareness();
+    let scale = get_system_dpi_scale().max(1.0);
     Conf {
         window_title: format!("Chubby Mod Manager v{} Setup", VERSION),
-        window_width: 680,
-        window_height: 450,
+        window_width: (680.0 * scale).round() as i32,
+        window_height: (450.0 * scale).round() as i32,
         window_resizable: false,
         high_dpi: true,
         sample_count: 4,
@@ -370,6 +404,51 @@ async fn main() {
     let shot_path = arg_value("--screenshot");
     let badge = Texture2D::from_file_with_format(APP_ICON_JPG, Some(ImageFormat::Jpeg));
     badge.set_filter(FilterMode::Linear);
+
+    let win_dir = env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+    let load_font = |name: &str| {
+        let p = format!("{}\\Fonts\\{}", win_dir, name);
+        fs::read(&p).ok().and_then(|b| {
+            let mut f = load_ttf_font_from_bytes(&b).ok()?;
+            f.set_filter(FilterMode::Linear);
+            Some(f)
+        })
+    };
+    let font = load_font("segoeui.ttf").or_else(|| load_font("arial.ttf"));
+    let bold = load_font("segoeuib.ttf").or_else(|| load_font("arialbd.ttf")).or_else(|| font.clone());
+
+    let d_txt = |s: &str, x: f32, y: f32, size: f32, c: Color| {
+        draw_text_ex(
+            s,
+            x,
+            y,
+            TextParams {
+                font: font.as_ref(),
+                font_size: size as u16,
+                color: c,
+                ..Default::default()
+            },
+        );
+    };
+    let d_btxt = |s: &str, x: f32, y: f32, size: f32, c: Color| {
+        draw_text_ex(
+            s,
+            x,
+            y,
+            TextParams {
+                font: bold.as_ref(),
+                font_size: size as u16,
+                color: c,
+                ..Default::default()
+            },
+        );
+    };
+    let m_txt = |s: &str, size: f32| -> f32 {
+        measure_text(s, font.as_ref(), size as u16, 1.0).width
+    };
+    let m_btxt = |s: &str, size: f32| -> f32 {
+        measure_text(s, bold.as_ref(), size as u16, 1.0).width
+    };
 
     let mut path_focused = false;
     let mut opt_desktop = true;
@@ -437,12 +516,12 @@ async fn main() {
                 ..Default::default()
             },
         );
-        draw_text(&format!("CHUBBY MOD MANAGER  v{}", VERSION), 90.0, 44.0, 26.0, text);
-        draw_text(
+        d_btxt(&format!("CHUBBY MOD MANAGER  v{}", VERSION), 90.0, 44.0, 24.0, text);
+        d_txt(
             &format!("SETUP WIZARD v{}  |  CHOOSE INSTALL LOCATION & SHORTCUTS", VERSION),
             90.0,
             66.0,
-            16.0,
+            13.5,
             accent_hi,
         );
 
@@ -454,11 +533,11 @@ async fn main() {
         draw_rectangle(cx, cy, cw, ch, panel);
         draw_rectangle_lines(cx, cy, cw, ch, 1.0, line);
 
-        draw_text(
+        d_btxt(
             "INSTALLATION FOLDER  (click to edit path or click Browse...)",
             cx + 18.0,
-            cy + 28.0,
-            16.0,
+            cy + 26.0,
+            13.5,
             muted,
         );
 
@@ -492,10 +571,10 @@ async fn main() {
         if path_focused && ((get_time() * 2.0) as i32 % 2 == 0) {
             shown.push('|');
         }
-        while measure_text(&shown, None, 17, 1.0).width > box_w - 20.0 && shown.len() > 4 {
+        while m_txt(&shown, 15.0) > box_w - 20.0 && shown.len() > 4 {
             shown.remove(0);
         }
-        draw_text(&shown, box_x + 10.0, box_y + 24.0, 17.0, text);
+        d_txt(&shown, box_x + 10.0, box_y + 24.0, 15.0, text);
 
         // Browse... button
         draw_rectangle(
@@ -514,12 +593,12 @@ async fn main() {
             if browse_hov { accent_hi } else { line },
         );
         let btxt = "BROWSE...";
-        let btw = measure_text(btxt, None, 17, 1.0).width;
-        draw_text(
+        let btw = m_btxt(btxt, 14.0);
+        d_btxt(
             btxt,
             browse_x + (browse_w - btw) * 0.5,
             box_y + 24.0,
-            17.0,
+            14.0,
             text,
         );
 
@@ -556,7 +635,7 @@ async fn main() {
                 draw_line(bx + 4.0, by + 10.0, bx + 9.0, by + 15.0, 2.2, WHITE);
                 draw_line(bx + 9.0, by + 15.0, bx + 16.0, by + 5.0, 2.2, WHITE);
             }
-            draw_text(label, bx + 32.0, ry + 23.0, 18.0, text);
+            d_txt(label, bx + 32.0, ry + 22.0, 15.0, text);
             if hov && clicked && installed_exe.is_none() {
                 match *id {
                     0 => opt_desktop = !opt_desktop,
@@ -575,7 +654,7 @@ async fn main() {
         } else {
             muted
         };
-        draw_text(&status_msg, 24.0, h - 42.0, 17.0, status_col);
+        d_txt(&status_msg, 24.0, h - 38.0, 15.0, status_col);
 
         let btn_w = 190.0;
         let btn_h = 44.0;
@@ -595,12 +674,12 @@ async fn main() {
         } else {
             "INSTALL NOW"
         };
-        let tw = measure_text(btn_label, None, 20, 1.0).width;
-        draw_text(
+        let tw = m_btxt(btn_label, 17.0);
+        d_btxt(
             btn_label,
             btn_x + (btn_w - tw) * 0.5,
             btn_y + 28.0,
-            20.0,
+            17.0,
             WHITE,
         );
 
