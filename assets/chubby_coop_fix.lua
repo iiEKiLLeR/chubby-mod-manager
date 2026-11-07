@@ -1,5 +1,5 @@
 -- !chubby_coop_fix.lua
--- Injected by Chubby Mod Manager for MULTIPLAYER RE4R (v1.0.16)
+-- Injected by Chubby Mod Manager for MULTIPLAYER RE4R (v1.0.17)
 -- Deep Root-Cause Stability & Performance Fixes for Co-op:
 -- 1. Death & Respawn Crash Fix (Both Players):
 --    - Replaces broken raw-memory GameOverRequest write_qword hack in ds_trigger_gameover / ds_handle_remote_death
@@ -9,13 +9,13 @@
 -- 2. Character Selection & Ada/Mercenaries Crash Fix (Both P1 & P2):
 --    - Disables unstable Mercenaries voice-donor prefab injection (ch3a8z0_mc_body.pfb) and dangling C++ Wwise container pointer theft
 --      (cs_apply_voice, vs_tick_donor, p1_cs_apply_voice, p1_vs_tick_donor, wpn_sound_apply).
---    - Blocks via.motion.MotionFsm2Layer:set_MotionFsm2Resource(nil) at both the Lua and C++ SDK hook levels to prevent
---      the re4.exe+0x192596E null-pointer dereference crash on worker animation threads.
+--    - Patches both data.lua's _G.CS_DISABLE_LIST and sub 1.lua's private LUIS_SWAP disable list (using metatable-safe rawget/rawset)
+--      so via.motion.MotionFsm2Layer:set_MotionFsm2Resource(nil) is NEVER called (fixes re4.exe+0x192596E animation thread crash).
 --    - Prevents cs_clear_loaded_banks and LUIS_SWAP:clear_loaded_banks from shrinking DynamicMotionBankCount mid-animation.
 -- 3. Random Gameplay Crash Fix:
 --    - Guards sdk.typeof against nil type arguments (eliminates via.Scene:findComponents System.ArgumentNullException).
---    - Disables forced 3-second dead-enemy corpse destruction (DESPAWN_DEAD_ENABLED / mplus_destroy_corpse) that caused ragdoll/loot crashes.
---    - Atomic in-memory JSON packet cache for json.load_file / json.dump_file (eliminates 0-byte mid-write packet truncation).
+--    - Disables forced 3-second dead-enemy corpse destruction (DESPAWN_DEAD_ENABLED / mplus_destroy_corpse) in logic.lua.
+--    - Atomic in-memory JSON packet cache + 0-byte file guard for json.load_file / json.dump_file.
 
 local CFG = {
     smooth_movement     = true,
@@ -34,6 +34,7 @@ local STATE = {
     accent_hex          = 0xFFE9A50E,
     connected           = false,
     role                = "None",
+    load_time           = os.clock(),
     last_role_check     = 0.0,
     last_theme_check    = 0.0,
     last_unpause_check  = 0.0,
@@ -44,17 +45,19 @@ local STATE = {
     sim_wrapped         = false,
     pause_hooked        = false,
     gameover_hooked     = false,
-    motfsm_hooked       = false,
-    globals_patched     = false,
     luis_swap_patched   = false,
-    corpse_despawn_off  = false,
+    logic_env_patched   = false,
     smoothed_frames     = 0,
     unpaused_frames     = 0,
     crash_guards_fired  = 0,
 }
 
+local cached_ls_inner  = nil
+local cached_logic_env = nil
+local recorded_reset_callbacks = {}
+
 -- ============================================================================
--- 0. EARLY SDK, JSON & IMGUI CRASH GUARDS (Runs before data.lua / logic.lua / sub 1.lua)
+-- 0. EARLY SDK, JSON & SCRIPT-RESET GUARDS (Runs before data.lua / logic.lua / sub 1.lua)
 -- ============================================================================
 local json_memory_cache = {}
 
@@ -76,6 +79,27 @@ pcall(function()
 
         if type(orig_load_file) == "function" then
             json.load_file = function(filepath, ...)
+                if type(filepath) == "string" then
+                    local disk_path = filepath
+                    if not filepath:find("^reframework[/\\]") and not filepath:find(":") then
+                        disk_path = "reframework/data/" .. filepath
+                    end
+                    local f = io.open(disk_path, "r")
+                    if not f then
+                        -- File does not exist yet; return cached table or empty table for type_remaps without C++ parse error
+                        if filepath == "type_remaps.json" or filepath == "type_remaps_auto.json" then
+                            return {}
+                        end
+                        return json_memory_cache[filepath]
+                    end
+                    local first_bytes = f:read(4)
+                    f:close()
+                    if not first_bytes or #first_bytes < 2 then
+                        -- 0-byte truncated file mid-write by Re4-Co-op.dll or partner script
+                        STATE.crash_guards_fired = STATE.crash_guards_fired + 1
+                        return json_memory_cache[filepath]
+                    end
+                end
                 local ok, res = pcall(orig_load_file, filepath, ...)
                 if ok and type(res) == "table" then
                     if type(filepath) == "string" then
@@ -83,7 +107,6 @@ pcall(function()
                     end
                     return res
                 end
-                -- Return last known valid packet table if concurrent write truncated file to 0 bytes
                 if type(filepath) == "string" and json_memory_cache[filepath] ~= nil then
                     STATE.crash_guards_fired = STATE.crash_guards_fired + 1
                     return json_memory_cache[filepath]
@@ -95,71 +118,38 @@ pcall(function()
 end)
 
 pcall(function()
-    if type(sdk) == "table" then
+    if type(sdk) == "table" and type(sdk.typeof) == "function" then
         local orig_typeof = sdk.typeof
-        local typeof_cache = {}
-        local fallback_type = nil
+        local fallback_component_type = nil
 
-        if type(orig_typeof) == "function" then
-            sdk.typeof = function(type_name)
-                if type(type_name) == "string" and #type_name > 0 then
-                    local cached = typeof_cache[type_name]
-                    if cached ~= nil then
-                        return cached
-                    end
-                    local ok, t = pcall(orig_typeof, type_name)
-                    if ok and t ~= nil then
-                        typeof_cache[type_name] = t
-                        if not fallback_type then
-                            fallback_type = t
-                        end
-                        return t
-                    end
-                end
-                -- Never return nil to via.Scene:findComponents(System.Type) -> prevents System.ArgumentNullException
+        sdk.typeof = function(type_name)
+            -- Only intercept nil / empty type_name (prevents via.Scene:findComponents System.ArgumentNullException)
+            if type(type_name) ~= "string" or #type_name == 0 then
                 STATE.crash_guards_fired = STATE.crash_guards_fired + 1
-                if not fallback_type then
+                if not fallback_component_type then
                     pcall(function()
-                        fallback_type = orig_typeof("via.Transform") or orig_typeof("via.Component")
+                        fallback_component_type = orig_typeof("via.Component")
                     end)
                 end
-                return fallback_type
+                return fallback_component_type
             end
-        end
-
-        local orig_create_resource = sdk.create_resource
-        if type(orig_create_resource) == "function" then
-            sdk.create_resource = function(res_type, res_path, ...)
-                if type(res_type) ~= "string" or type(res_path) ~= "string" or #res_path == 0 then
-                    STATE.crash_guards_fired = STATE.crash_guards_fired + 1
-                    return nil
-                end
-                local ok, res = pcall(orig_create_resource, res_type, res_path, ...)
-                if not ok or not res then
-                    STATE.crash_guards_fired = STATE.crash_guards_fired + 1
-                    return nil
-                end
-                pcall(function() res:add_ref() end)
+            local ok, res = pcall(orig_typeof, type_name)
+            if ok then
                 return res
             end
+            return nil
         end
     end
 end)
 
 pcall(function()
-    if type(imgui) == "table" and type(imgui.checkbox) == "function" then
-        local orig_checkbox = imgui.checkbox
-        imgui.checkbox = function(label, value, ...)
-            -- Automatically turn off logic.lua's "Despawn Dead Enemies" which forcibly destroys corpses after 3s
-            if CFG.safe_corpse_despawn and not STATE.corpse_despawn_off and type(label) == "string" then
-                if label:find("Despawn Dead", 1, true) and value == true then
-                    STATE.corpse_despawn_off = true
-                    STATE.crash_guards_fired = STATE.crash_guards_fired + 1
-                    pcall(orig_checkbox, label, false, ...)
-                    return true, false
-                end
+    if type(re) == "table" and type(re.on_script_reset) == "function" then
+        local orig_on_script_reset = re.on_script_reset
+        re.on_script_reset = function(fn, ...)
+            if type(fn) == "function" then
+                table.insert(recorded_reset_callbacks, fn)
             end
-            return orig_checkbox(label, value, ...)
+            return orig_on_script_reset(fn, ...)
         end
     end
 end)
@@ -189,77 +179,42 @@ local function safe_cleanup_coop_actors_for_reload()
         end
     end)
     pcall(function()
-        if type(_G.LUIS_SWAP) == "table" and type(_G.LUIS_SWAP.tick) == "function" then
-            for i = 1, 20 do
-                local k, v = debug.getupvalue(_G.LUIS_SWAP.tick, i)
-                if not k then break end
-                if type(v) == "table" and type(v.despawn) == "function" then
-                    if v.state ~= "IDLE" then
-                        pcall(v.despawn, v)
-                    end
-                    break
-                end
+        if type(cached_ls_inner) == "table" then
+            local despawn_fn = rawget(cached_ls_inner, "despawn")
+            if type(despawn_fn) == "function" and rawget(cached_ls_inner, "alive") then
+                pcall(despawn_fn, cached_ls_inner)
             end
         end
     end)
 end
 
 -- ============================================================================
--- 2. C++ ENGINE HOOKS: MOTIONFSM2 NULL-RESOURCE GUARD & GAMEOVER GUARD
+-- 2. MANAGED GAMEOVER HOOK (Delayed Until After Startup Init)
 -- ============================================================================
-local function install_engine_crash_hooks()
-    if not sdk then return end
+local function install_gameover_hook(now)
+    if STATE.gameover_hooked or not sdk then return end
+    if (now - STATE.load_time) < 3.0 then return end
 
-    -- A. Prevent via.motion.MotionFsm2Layer:set_MotionFsm2Resource(nil) from ever nulling [rdi + 0x258] (re4.exe+0x192596E crash)
-    if not STATE.motfsm_hooked then
-        STATE.motfsm_hooked = true
-        local layer_types = {
-            "via.motion.MotionFsm2Layer",
-            "via.motion.MotionFsm2RawLayer",
-        }
-        for _, tname in ipairs(layer_types) do
-            pcall(function()
-                local td = sdk.find_type_definition(tname)
-                if td then
-                    local m = td:get_method("set_MotionFsm2Resource")
-                    if m then
-                        sdk.hook(m, function(args)
-                            if not args or not args[3] or sdk.to_int64(args[3]) == 0 then
-                                STATE.crash_guards_fired = STATE.crash_guards_fired + 1
-                                return sdk.PreHookResult.SKIP_ORIGINAL
-                            end
-                        end, function(ret)
-                            return ret
-                        end)
-                    end
-                end
+    local td_gom = sdk.find_type_definition("chainsaw.GameOverMediator")
+    if not td_gom then return end
+    STATE.gameover_hooked = true
+
+    pcall(function()
+        local m = td_gom:get_method("requestGameOver")
+        if m then
+            sdk.hook(m, function(args)
+                STATE.gameover_cooldown = os.clock() + 12.0
+                _G.ds_local_dead = true
+                safe_cleanup_coop_actors_for_reload()
+            end, function(ret)
+                return ret
             end)
         end
-    end
-
-    -- B. Hook chainsaw.GameOverMediator:requestGameOver so local player death cleanly tears down Co-op actors and allows pause
-    if not STATE.gameover_hooked then
-        local td_gom = sdk.find_type_definition("chainsaw.GameOverMediator")
-        if td_gom then
-            STATE.gameover_hooked = true
-            pcall(function()
-                local m = td_gom:get_method("requestGameOver")
-                if m then
-                    sdk.hook(m, function(args)
-                        STATE.gameover_cooldown = os.clock() + 12.0
-                        _G.ds_local_dead = true
-                        safe_cleanup_coop_actors_for_reload()
-                    end, function(ret)
-                        return ret
-                    end)
-                end
-            end)
-        end
-    end
+    end)
 end
 
 -- ============================================================================
--- 3. SURGICAL PATCHES FOR DATA.LUA & SUB 1.LUA (Character Switch & Death Sync)
+-- 3. SURGICAL PATCHES FOR DATA.LUA, LOGIC.LUA & SUB 1.LUA (Metatable-Safe)
 -- ============================================================================
 local function safe_disable_motfsm2_on_go(go)
     if not go then return 0 end
@@ -285,51 +240,177 @@ local function safe_disable_motfsm2_on_go(go)
     return count
 end
 
+local function patch_logic_corpse_despawn()
+    if not STATE.logic_env_patched and #recorded_reset_callbacks > 0 and debug and debug.getupvalue then
+        for _, fn in ipairs(recorded_reset_callbacks) do
+            for i = 1, 20 do
+                local un, uv = debug.getupvalue(fn, i)
+                if not un then break end
+                if un == "t" and type(uv) == "table" then
+                    local env = rawget(uv, 0)
+                    if type(env) == "table" and rawget(env, "DESPAWN_DEAD_ENABLED") ~= nil then
+                        cached_logic_env = env
+                        STATE.logic_env_patched = true
+                        break
+                    end
+                end
+            end
+            if STATE.logic_env_patched then break end
+        end
+    end
+    if type(cached_logic_env) == "table" then
+        if CFG.safe_corpse_despawn then
+            if rawget(cached_logic_env, "DESPAWN_DEAD_ENABLED") == true then
+                rawset(cached_logic_env, "DESPAWN_DEAD_ENABLED", false)
+                STATE.crash_guards_fired = STATE.crash_guards_fired + 1
+            end
+            rawset(cached_logic_env, "mplus_destroy_corpse", function(...) return false end)
+        else
+            rawset(cached_logic_env, "DESPAWN_DEAD_ENABLED", true)
+        end
+    end
+end
+
+local function patch_sub1_luis_swap()
+    if STATE.luis_swap_patched then return end
+    if type(_G.LUIS_SWAP) ~= "table" then return end
+    local tick_fn = rawget(_G.LUIS_SWAP, "tick")
+    if type(tick_fn) ~= "function" or not debug or not debug.getupvalue then return end
+
+    STATE.luis_swap_patched = true
+
+    -- IMPORTANT: Luraph VM internal tables have an anti-tamper __index trap (while true do end).
+    -- We ONLY follow upvalue 'v' (the closure value register table) and ONLY use rawget/rawset/next
+    -- so no metatable (__index / __newindex / __pairs) is EVER invoked!
+    local visited = {}
+    local function scan_upvalue_v(val, depth)
+        if depth > 10 or val == nil or visited[val] then return end
+        visited[val] = true
+
+        if type(val) == "table" then
+            if rawget(val, "mode") == "strip_layers" or rawget(val, "setter") == "set_MotionFsm2Resource" then
+                rawset(val, "mode", "component")
+                rawset(val, "setter", nil)
+                STATE.crash_guards_fired = STATE.crash_guards_fired + 1
+            end
+            if not cached_ls_inner and type(rawget(val, "spawn")) == "function" and type(rawget(val, "enforce")) == "function" then
+                cached_ls_inner = val
+            end
+            for k, v in next, val, nil do
+                scan_upvalue_v(v, depth + 1)
+            end
+        elseif type(val) == "function" then
+            for i = 1, 25 do
+                local un, uv = debug.getupvalue(val, i)
+                if not un then break end
+                if un == "v" then
+                    scan_upvalue_v(uv, depth + 1)
+                end
+            end
+        end
+    end
+
+    pcall(scan_upvalue_v, tick_fn, 0)
+
+    if type(cached_ls_inner) == "table" then
+        -- Prevent clear_loaded_banks from shrinking DynamicMotionBankCount on active P1 Motion component
+        rawset(cached_ls_inner, "clear_loaded_banks", function(self)
+            rawset(self, "loaded_banks", {})
+            STATE.crash_guards_fired = STATE.crash_guards_fired + 1
+        end)
+
+        -- Wrap all LUIS_SWAP inner methods in pcall + transition guards using rawget/rawset
+        local methods_to_wrap = {
+            "spawn",
+            "despawn",
+            "update",
+            "resolve_rooms",
+            "enforce",
+            "enforce_skin_materials",
+            "load_ada_banks",
+            "capture_p1_native_types",
+            "sync_bank_types_from_p1",
+            "mirror_tick",
+        }
+        for _, mname in ipairs(methods_to_wrap) do
+            local orig_fn = rawget(cached_ls_inner, mname)
+            if type(orig_fn) == "function" then
+                rawset(cached_ls_inner, mname, function(self, ...)
+                    if is_death_or_transition_active() and mname ~= "despawn" then
+                        return
+                    end
+                    local ok, res = pcall(orig_fn, self, ...)
+                    if not ok then
+                        STATE.crash_guards_fired = STATE.crash_guards_fired + 1
+                        return nil
+                    end
+                    return res
+                end)
+            end
+        end
+    end
+
+    -- Also wrap _G.LUIS_SWAP.tick using rawset
+    rawset(_G.LUIS_SWAP, "tick", function(...)
+        if is_death_or_transition_active() then
+            return
+        end
+        local ok = pcall(tick_fn, ...)
+        if not ok then
+            STATE.crash_guards_fired = STATE.crash_guards_fired + 1
+        end
+    end)
+
+    log.info("[Chubby-Coop-Fix] Safely patched LUIS_SWAP & MotionFsm2 strip_layers (metatable-safe)")
+end
+
 local function patch_coop_globals()
     -- 1. Disable Mercenaries voice-donor prefab spawning & native Wwise container pointer theft
     if CFG.safe_char_swap then
-        _G.diag_enable_voice_swap       = false
-        _G.diag_vs_1_spawn_donor        = false
-        _G.diag_vs_2_speaker_id         = false
-        _G.diag_vs_3_motion_container   = false
-        _G.diag_vs_4_vibration_container= false
-        _G.diag_vs_5_hit_container      = false
-        _G.diag_vs_6_haptics_container  = false
-        _G.diag_vs_7_weapon_children    = false
-        _G.diag_vs_8_body_apollo        = false
-        _G.diag_vs_9_set_active_flag    = false
-        _G.diag_vs_10_destroy_donor     = false
-        _G.vs_hooks_bypass              = true
-        _G.vs_donor_spawning            = false
-        _G.vs_donor_pending_voice       = nil
-        _G.p1_vs_donor_spawning         = false
-        _G.p1_vs_donor_pending_voice    = nil
+        _G.diag_enable_voice_swap        = false
+        _G.diag_vs_1_spawn_donor         = false
+        _G.diag_vs_2_speaker_id          = false
+        _G.diag_vs_3_motion_container    = false
+        _G.diag_vs_4_vibration_container = false
+        _G.diag_vs_5_hit_container       = false
+        _G.diag_vs_6_haptics_container   = false
+        _G.diag_vs_7_weapon_children     = false
+        _G.diag_vs_8_body_apollo         = false
+        _G.diag_vs_9_set_active_flag     = false
+        _G.diag_vs_10_destroy_donor      = false
+        _G.vs_hooks_bypass               = true
+        _G.vs_donor_spawning             = false
+        _G.vs_donor_pending_voice        = nil
+        _G.p1_vs_donor_spawning          = false
+        _G.p1_vs_donor_pending_voice     = nil
 
         local noop_voice = function(...) return false end
-        _G.cs_apply_voice               = noop_voice
-        _G.vs_tick_donor                = noop_voice
-        _G.vs_revert_voice              = noop_voice
-        _G.p1_cs_apply_voice            = noop_voice
-        _G.p1_vs_tick_donor             = noop_voice
-        _G.p1_vs_revert_and_park        = noop_voice
-        _G.p1_vs_on_companion_respawn   = noop_voice
-        _G.wpn_sound_tick               = noop_voice
-        _G.wpn_sound_apply              = noop_voice
-        _G.wpn_sound_on_respawn         = noop_voice
+        _G.cs_apply_voice                = noop_voice
+        _G.vs_tick_donor                 = noop_voice
+        _G.vs_revert_voice               = noop_voice
+        _G.p1_cs_apply_voice             = noop_voice
+        _G.p1_vs_tick_donor              = noop_voice
+        _G.p1_vs_revert_and_park         = noop_voice
+        _G.p1_vs_on_companion_respawn    = noop_voice
+        _G.wpn_sound_tick                = noop_voice
+        _G.wpn_sound_apply               = noop_voice
+        _G.wpn_sound_on_respawn          = noop_voice
     end
 
-    -- 2. Disable forced dead-corpse destruction
+    -- 2. Disable forced dead-corpse destruction in logic.lua
     if CFG.safe_corpse_despawn then
         _G.mplus_destroy_corpse = function(...) return false end
     end
+    patch_logic_corpse_despawn()
 
-    -- 3. Patch CS_DISABLE_LIST and cs_strip_motfsm2_layers so MotionFsm2Resource is NEVER set to nil
+    -- 3. Patch data.lua's _G.CS_DISABLE_LIST and cs_strip_motfsm2_layers so MotionFsm2Resource is NEVER set to nil
     if type(_G.CS_DISABLE_LIST) == "table" then
         for _, entry in ipairs(_G.CS_DISABLE_LIST) do
             if type(entry) == "table" then
-                if entry.mode == "strip_layers" or entry.setter == "set_MotionFsm2Resource" then
-                    entry.mode = "component"
-                    entry.setter = nil
+                if rawget(entry, "mode") == "strip_layers" or rawget(entry, "setter") == "set_MotionFsm2Resource" then
+                    rawset(entry, "mode", "component")
+                    rawset(entry, "setter", nil)
+                    STATE.crash_guards_fired = STATE.crash_guards_fired + 1
                 end
             end
         end
@@ -347,14 +428,13 @@ local function patch_coop_globals()
     if type(_G.cs_clear_loaded_banks) == "function" and not _G.__chubby_clear_banks_patched then
         _G.__chubby_clear_banks_patched = true
         _G.cs_clear_loaded_banks = function()
-            -- Reset Lua tracking state without removing live DynamicMotionBanks while animation threads are ticking
             _G.cs_loaded_banks = {}
             _G.cs_active_bank_elements = {}
             STATE.crash_guards_fired = STATE.crash_guards_fired + 1
         end
     end
 
-    -- 5. Wrap cs_apply_skin, cs_add_dynamic_motionbank, cs_load_banks_from_list in safe pcall guards
+    -- 5. Wrap cs_apply_skin and cs_add_dynamic_motionbank in safe pcall guards
     if type(_G.cs_apply_skin) == "function" and not _G.__chubby_apply_skin_patched then
         _G.__chubby_apply_skin_patched = true
         local orig_cs_apply_skin = _G.cs_apply_skin
@@ -395,7 +475,6 @@ local function patch_coop_globals()
     if CFG.safe_death_sync and type(_G.ds_trigger_gameover) == "function" and not _G.__chubby_death_patched then
         _G.__chubby_death_patched = true
 
-        -- Never execute raw write_qword on un-add_ref'd GameOverRequest / GameOverStateArgument / GameOverReasonElement!
         _G.ds_trigger_gameover = function(reason_code)
             STATE.crash_guards_fired = STATE.crash_guards_fired + 1
             STATE.gameover_cooldown = os.clock() + 8.0
@@ -415,7 +494,7 @@ local function patch_coop_globals()
             if type(sig) == "number" then
                 is_dead = (sig > 0)
             elseif type(sig) == "table" then
-                is_dead = (sig.dead == true) or (type(sig.seq) == "number" and sig.seq > 0)
+                is_dead = (rawget(sig, "dead") == true) or (type(rawget(sig, "seq")) == "number" and rawget(sig, "seq") > 0)
             elseif type(sig) == "boolean" then
                 is_dead = sig
             end
@@ -431,11 +510,7 @@ local function patch_coop_globals()
                             _G.notif_push("Partner died - waiting for respawn...", "WARNING", 4.0)
                         end
                     end)
-                    pcall(function()
-                        if type(_G.cs_cleanup_for_reload) == "function" then
-                            _G.cs_cleanup_for_reload()
-                        end
-                    end)
+                    safe_cleanup_coop_actors_for_reload()
                 end
             else
                 if _G.ds_remote_dead then
@@ -451,66 +526,8 @@ local function patch_coop_globals()
         end
     end
 
-    -- 7. Patch _G.LUIS_SWAP (sub 1.lua P1 Character Swapper — fixes friend crashing when selecting Ada / other characters)
-    if not STATE.luis_swap_patched and type(_G.LUIS_SWAP) == "table" and type(_G.LUIS_SWAP.tick) == "function" then
-        for i = 1, 20 do
-            local k, ls = debug.getupvalue(_G.LUIS_SWAP.tick, i)
-            if not k then break end
-            if type(ls) == "table" and type(ls.spawn) == "function" then
-                STATE.luis_swap_patched = true
-
-                -- Prevent clear_loaded_banks from shrinking DynamicMotionBankCount on active P1 Motion component
-                ls.clear_loaded_banks = function(self)
-                    self.loaded_banks = {}
-                    STATE.crash_guards_fired = STATE.crash_guards_fired + 1
-                end
-
-                -- Wrap all LUIS_SWAP methods in pcall guards
-                local methods_to_wrap = {
-                    "spawn",
-                    "despawn",
-                    "update",
-                    "resolve_rooms",
-                    "enforce",
-                    "enforce_skin_materials",
-                    "load_ada_banks",
-                    "capture_p1_native_types",
-                    "sync_bank_types_from_p1",
-                    "mirror_tick",
-                }
-                for _, mname in ipairs(methods_to_wrap) do
-                    local orig_fn = ls[mname]
-                    if type(orig_fn) == "function" then
-                        ls[mname] = function(self, ...)
-                            if is_death_or_transition_active() and mname ~= "despawn" then
-                                return
-                            end
-                            local ok, res = pcall(orig_fn, self, ...)
-                            if not ok then
-                                STATE.crash_guards_fired = STATE.crash_guards_fired + 1
-                                log.warn("[Chubby-Coop-Fix] Guarded LUIS_SWAP:" .. mname .. " error: " .. tostring(res))
-                                return nil
-                            end
-                            return res
-                        end
-                    end
-                end
-
-                local orig_tick = _G.LUIS_SWAP.tick
-                _G.LUIS_SWAP.tick = function(...)
-                    if is_death_or_transition_active() then
-                        return
-                    end
-                    local ok, err = pcall(orig_tick, ...)
-                    if not ok then
-                        STATE.crash_guards_fired = STATE.crash_guards_fired + 1
-                    end
-                end
-                log.info("[Chubby-Coop-Fix] Patched LUIS_SWAP (P1 character swapper) with crash guards")
-                break
-            end
-        end
-    end
+    -- 7. Patch _G.LUIS_SWAP (sub 1.lua P1 Character Swapper) using metatable-safe rawget/rawset
+    patch_sub1_luis_swap()
 end
 
 -- ============================================================================
@@ -548,13 +565,13 @@ local function wrap_re4mp_sim()
     if STATE.sim_wrapped or type(RE4MP_SIM) ~= "table" then
         return
     end
-    local orig_get_pose = RE4MP_SIM.get_pose
+    local orig_get_pose = rawget(RE4MP_SIM, "get_pose")
     if type(orig_get_pose) ~= "function" then
         return
     end
     STATE.sim_wrapped = true
 
-    RE4MP_SIM.get_pose = function(...)
+    rawset(RE4MP_SIM, "get_pose", function(...)
         local x, y, z, qx, qy, qz, qw, seq = orig_get_pose(...)
         if not CFG.smooth_movement or type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
             return x, y, z, qx, qy, qz, qw, seq
@@ -613,14 +630,17 @@ local function wrap_re4mp_sim()
         )
         STATE.smoothed_frames = STATE.smoothed_frames + 1
         return pose_state.sx, pose_state.sy, pose_state.sz, pose_state.sqx, pose_state.sqy, pose_state.sqz, pose_state.sqw, seq
-    end
+    end)
 end
 
 -- ============================================================================
 -- 5. SAFE EVENT-DRIVEN UNPAUSE HOOKS (Respects Death, GameOver & Scene Reloads)
 -- ============================================================================
-local function install_unpause_hooks()
+local function install_unpause_hooks(now)
     if STATE.pause_hooked or not sdk then
+        return
+    end
+    if (now - STATE.load_time) < 3.0 then
         return
     end
     local td_pause = sdk.find_type_definition("chainsaw.PauseManager")
@@ -758,10 +778,10 @@ re.on_pre_application_entry("UpdateBehavior", function()
         wrap_re4mp_sim()
     end
     if not STATE.pause_hooked then
-        install_unpause_hooks()
+        install_unpause_hooks(now)
     end
-    if not STATE.motfsm_hooked or not STATE.gameover_hooked then
-        install_engine_crash_hooks()
+    if not STATE.gameover_hooked then
+        install_gameover_hook(now)
     end
     if (now - STATE.last_patch_check) > 0.25 then
         STATE.last_patch_check = now
@@ -776,12 +796,14 @@ re.on_frame(function()
     if not STATE.sim_wrapped then
         wrap_re4mp_sim()
     end
-    patch_coop_globals()
+    if not STATE.luis_swap_patched or not STATE.logic_env_patched then
+        patch_coop_globals()
+    end
 end)
 
 re.on_draw_ui(function()
     if not imgui then return end
-    if imgui.tree_node("Chubby Co-op Enhancer v1.0.16 (" .. STATE.theme_name .. ")") then
+    if imgui.tree_node("Chubby Co-op Enhancer v1.0.17 (" .. STATE.theme_name .. ")") then
         imgui.text_colored("Synced Theme: " .. STATE.theme_name .. "  |  Session: " .. (STATE.connected and ("Connected (" .. STATE.role .. ")") or "Standby"), STATE.accent_hex)
         imgui.text("Single OS Mouse Cursor Fix: Active (Re4-Co-op.dll patched)")
         local c1, v1 = imgui.checkbox("Smooth Partner Movement (Lerp/Slerp)", CFG.smooth_movement)
@@ -793,10 +815,10 @@ re.on_draw_ui(function()
         local c4, v4 = imgui.checkbox("Character Switch Crash Protection (Ada / Mercenaries)", CFG.safe_char_swap)
         if c4 then CFG.safe_char_swap = v4; patch_coop_globals() end
         local c5, v5 = imgui.checkbox("Disable Forced Dead-Enemy Corpse Destruction", CFG.safe_corpse_despawn)
-        if c5 then CFG.safe_corpse_despawn = v5 end
+        if c5 then CFG.safe_corpse_despawn = v5; patch_logic_corpse_despawn() end
         imgui.text(string.format("Stats: %d smoothed frames | %d pause blocks | %d crash guards triggered", STATE.smoothed_frames, STATE.unpaused_frames, STATE.crash_guards_fired))
         imgui.tree_pop()
     end
 end)
 
-log.info("[Chubby-Coop-Fix] v1.0.16 stability & crash-protection suite loaded")
+log.info("[Chubby-Coop-Fix] v1.0.17 stability & crash-protection suite loaded")
