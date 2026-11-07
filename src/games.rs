@@ -141,3 +141,35 @@ pub fn exe_path(g: &GameDef, dir: &Path) -> PathBuf {
     }
     p
 }
+
+/// Built-in CHARACTERS categories for each Resident Evil game (matching Fluffy Mod Manager's
+/// category list for each title).
+pub fn character_categories(game_id: &str) -> &'static [&'static str] {
+    match game_id {
+        "re2r" => &["Leon", "Claire", "Ada", "Sherry", "Annette", "Hunk", "Enemies", "Multiple"],
+        "re3r" => &["Jill", "Carlos", "Tyrell", "Nicholai", "Enemies", "Multiple"],
+        "re4r" => &["Ada", "Ashley", "Leon", "Luis", "Krauser", "Wesker", "Hunk", "Enemies", "Multiple"],
+        "re4" => &["Leon", "Ashley", "Ada", "Luis", "Krauser", "Wesker", "Hunk", "Enemies"],
+        "re5" => &["Chris", "Sheva", "Jill", "Wesker", "Josh", "Excella", "Enemies"],
+        "re6" => &["Leon", "Helena", "Chris", "Piers", "Jake", "Sherry", "Ada", "Carla", "Enemies"],
+        "re7" => &["Ethan", "Mia", "Zoe", "Chris", "Enemies"],
+        "re8" => &["Ethan", "Chris", "Rose", "Lady Dimitrescu", "Heisenberg", "Donna", "Moreau", "Duke", "Enemies"],
+        "rehd" => &["Jill", "Chris", "Rebecca", "Wesker", "Barry", "Enemies"],
+        "re0hd" => &["Rebecca", "Billy", "Wesker", "Enemies"],
+        "rev" => &["Jill", "Chris", "Parker", "Jessica", "Keith", "Quint", "Rachel", "Hunk", "Enemies"],
+        "rev2" => &["Claire", "Moira", "Barry", "Natalia", "Wesker", "Hunk", "Enemies"],
+        "resistance" => &["Survivors", "Masterminds", "Creatures"],
+        _ => &["Main Characters", "Enemies", "Multiple"],
+    }
+}
+
+/// Built-in OTHER categories for each Resident Evil game.
+pub fn other_categories(game_id: &str) -> &'static [&'static str] {
+    match game_id {
+        "re4r" => &["Co-op & Multiplayer", "RE Framework", "Weapons", "Models", "Textures", "Animations", "Music", "Text", "Misc"],
+        _ if GAMES.iter().any(|g| g.id == game_id && g.re_engine) => {
+            &["RE Framework", "Weapons", "Models", "Textures", "Animations", "Music", "Text", "Misc"]
+        }
+        _ => &["Weapons", "Models", "Textures", "Animations", "Music", "Text", "Misc"],
+    }
+}

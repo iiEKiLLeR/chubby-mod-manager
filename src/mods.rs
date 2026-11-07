@@ -19,6 +19,8 @@ pub struct ModEntry {
     pub author: String,
     pub description: String,
     pub categories: Vec<String>,
+    pub cat_group: String,
+    pub cat_name: String,
     pub screenshot: Option<PathBuf>,
     pub root: PathBuf,
     pub files: Vec<String>,
@@ -330,6 +332,7 @@ impl Library {
         }
         let names: Vec<String> = found.iter().map(|m| m.name.clone()).collect();
         let has_rf = self.game_dir.as_ref().map(|d| d.join("dinput8.dll").exists()).unwrap_or(true);
+        let cat_overrides = self.load_category_overrides();
         for (i, m) in found.iter_mut().enumerate() {
             m.installed = self.state.mods.iter().any(|s| s.key == m.key);
             let mut c: Vec<String> = Vec::new();
@@ -349,16 +352,31 @@ impl Library {
                     let fl = f.to_ascii_lowercase();
                     fl.starts_with("natives/") || fl.starts_with("reframework/")
                 });
+            let (grp, cname, tags) = classify_mod(
+                self.game.id,
+                &m.name,
+                &m.description,
+                &m.categories,
+                &m.files,
+                cat_overrides.get(&m.key),
+            );
+            m.cat_group = grp;
+            m.cat_name = cname;
+            m.categories = tags;
         }
         // Installed mods whose source vanished still show, so they can be uninstalled.
         for s in &self.state.mods {
             if !found.iter().any(|m| m.key == s.key) {
+                let (grp, cname, tags) = classify_mod(self.game.id, &s.name, "", &[], &[], cat_overrides.get(&s.key));
                 found.push(ModEntry {
                     key: s.key.clone(),
                     source_name: s.key.clone(),
                     name: format!("{} (source file missing)", s.name),
                     installed: true,
                     crc: s.crc,
+                    cat_group: grp,
+                    cat_name: cname,
+                    categories: tags,
                     ..Default::default()
                 });
             }
@@ -1063,6 +1081,199 @@ impl Library {
         }
         let _ = fsx::write_atomic(&self.base.join("crc-cache.txt"), s.as_bytes());
     }
+
+    pub fn load_category_overrides(&self) -> HashMap<String, (String, String)> {
+        let mut m = HashMap::new();
+        if let Ok(t) = fs::read_to_string(self.base.join("categories.txt")) {
+            for l in t.lines() {
+                let p: Vec<&str> = l.split('\t').collect();
+                if p.len() == 3 {
+                    m.insert(p[0].to_string(), (p[1].to_string(), p[2].to_string()));
+                }
+            }
+        }
+        m
+    }
+
+    pub fn set_mod_category(&mut self, key: &str, group: &str, cat: &str) {
+        let mut map = self.load_category_overrides();
+        map.insert(key.to_string(), (group.to_string(), cat.to_string()));
+        let mut s = String::new();
+        for (k, (g, c)) in &map {
+            s.push_str(&format!("{}\t{}\t{}\n", k, g, c));
+        }
+        let _ = fsx::write_atomic(&self.base.join("categories.txt"), s.as_bytes());
+        if let Some(m) = self.mods.iter_mut().find(|m| m.key == key) {
+            m.cat_group = group.to_string();
+            m.cat_name = cat.to_string();
+            if !m.categories.iter().any(|c| c.eq_ignore_ascii_case(cat)) {
+                m.categories.insert(0, cat.to_string());
+            } else if let Some(pos) = m.categories.iter().position(|c| c.eq_ignore_ascii_case(cat)) {
+                let val = m.categories.remove(pos);
+                m.categories.insert(0, val);
+            }
+        }
+    }
+}
+
+/// Classify a mod into `("CHARACTERS" | "OTHER", CategoryName, CleanTags)` using its `modinfo.ini`
+/// categories (such as Fluffy Mod Manager's `category=!Other > Misc` or `Characters > Leon`),
+/// its file paths (`reframework/`, `natives/stm/_chainsaw/character/...`, `.mesh.`, `.tex.`),
+/// its title, or a user-selected category override.
+fn classify_mod(
+    game_id: &str,
+    name: &str,
+    _desc: &str,
+    raw_cats: &[String],
+    files: &[String],
+    user_override: Option<&(String, String)>,
+) -> (String, String, Vec<String>) {
+    let chars = crate::games::character_categories(game_id);
+    let mut parsed: Vec<(String, String)> = Vec::new();
+    let mut extra_tags: Vec<String> = Vec::new();
+
+    for raw in raw_cats {
+        let cleaned = raw.trim().trim_start_matches('!').trim();
+        if cleaned.is_empty() {
+            continue;
+        }
+        let (grp_hint, leaf) = if let Some((l, r)) = cleaned.split_once('>') {
+            (l.trim().trim_start_matches('!').trim().to_ascii_lowercase(), r.trim().trim_start_matches('!').trim())
+        } else {
+            (String::new(), cleaned)
+        };
+        if leaf.eq_ignore_ascii_case("Chubby Enhanced") {
+            extra_tags.push("Chubby Enhanced".to_string());
+            continue;
+        }
+        if let Some(&ch) = chars.iter().find(|&&c| c.eq_ignore_ascii_case(leaf) || leaf.to_ascii_lowercase().starts_with(&c.to_ascii_lowercase())) {
+            parsed.push(("CHARACTERS".to_string(), ch.to_string()));
+            continue;
+        }
+        let ll = leaf.to_ascii_lowercase();
+        let mapped = match ll.as_str() {
+            "co-op" | "coop" | "multiplayer" | "co-op & multiplayer" => Some(("OTHER", "Co-op & Multiplayer")),
+            "re framework" | "reframework" | "framework" | "lua" | "script" | "scripts" | "plugin" | "plugins" => Some(("OTHER", "RE Framework")),
+            "weapon" | "weapons" | "gun" | "guns" => Some(("OTHER", "Weapons")),
+            "model" | "models" | "outfit" | "outfits" | "costume" | "costumes" | "skin" | "skins" | "hair" | "accessory" | "accessories" => Some(("OTHER", "Models")),
+            "texture" | "textures" => Some(("OTHER", "Textures")),
+            "animation" | "animations" | "motion" | "motions" => Some(("OTHER", "Animations")),
+            "music" | "audio" | "sound" | "sounds" | "voice" | "sfx" => Some(("OTHER", "Music")),
+            "text" | "ui" | "hud" | "gui" | "font" | "subtitles" => Some(("OTHER", "Text")),
+            "misc" | "miscellaneous" | "other" | "stage" | "gameplay" | "overhaul" | "patch" => Some(("OTHER", "Misc")),
+            "enemy" | "enemies" | "boss" | "bosses" | "creatures" => Some(("CHARACTERS", "Enemies")),
+            "multiple" => Some(("CHARACTERS", "Multiple")),
+            _ => None,
+        };
+        if let Some((g, c)) = mapped {
+            parsed.push((g.to_string(), c.to_string()));
+        } else if grp_hint.contains("char") {
+            parsed.push(("CHARACTERS".to_string(), leaf.to_string()));
+        } else {
+            parsed.push(("OTHER".to_string(), leaf.to_string()));
+        }
+    }
+
+    // Automatic inspection of file paths and mod name so mods without category= (or with generic
+    // "!Other > Misc") still match character/weapon/framework categories accurately.
+    let nl = name.to_ascii_lowercase();
+    let fl_all: Vec<String> = files.iter().map(|f| f.to_ascii_lowercase()).collect();
+
+    let mut auto_detected: Option<(String, String)> = None;
+    let has_coop = fl_all.iter().any(|f| f.contains("re4-co-op.dll") || f.contains("chubby_coop_fix.lua")) || nl.contains("co-op") || nl.contains("multiplayer");
+    let has_ref = fl_all.iter().any(|f| f == "dinput8.dll" || f.starts_with("reframework/"));
+
+    if has_coop {
+        auto_detected = Some(("OTHER".into(), "Co-op & Multiplayer".into()));
+    } else if has_ref {
+        auto_detected = Some(("OTHER".into(), "RE Framework".into()));
+    }
+
+    if auto_detected.is_none() {
+        // Check RE4R / RE2R / RE3R character folder codes or character names in mod title.
+        let char_match = if game_id == "re4r" {
+            if fl_all.iter().any(|f| f.contains("/ch0") || f.contains("/cha0") || f.contains("/pl00")) || word_match(&nl, "leon") {
+                Some("Leon")
+            } else if fl_all.iter().any(|f| f.contains("/ch1") || f.contains("/cha1") || f.contains("/pl01")) || word_match(&nl, "ashley") {
+                Some("Ashley")
+            } else if fl_all.iter().any(|f| f.contains("/ch2") || f.contains("/cha2") || f.contains("/pl02")) || word_match(&nl, "ada") {
+                Some("Ada")
+            } else if fl_all.iter().any(|f| f.contains("/ch3") || f.contains("/cha3") || f.contains("/pl03")) || word_match(&nl, "luis") {
+                Some("Luis")
+            } else if fl_all.iter().any(|f| f.contains("/ch4") || f.contains("/cha4")) || word_match(&nl, "krauser") {
+                Some("Krauser")
+            } else if fl_all.iter().any(|f| f.contains("/ch5") || f.contains("/cha5")) || word_match(&nl, "wesker") {
+                Some("Wesker")
+            } else if fl_all.iter().any(|f| f.contains("/ch6") || f.contains("/cha6")) || word_match(&nl, "hunk") {
+                Some("Hunk")
+            } else {
+                None
+            }
+        } else {
+            chars.iter().copied().find(|&c| c != "Enemies" && c != "Multiple" && word_match(&nl, &c.to_ascii_lowercase()))
+        };
+        if let Some(ch) = char_match {
+            auto_detected = Some(("CHARACTERS".into(), ch.into()));
+        }
+    }
+
+    if auto_detected.is_none() {
+        if fl_all.iter().any(|f| f.contains("/wp/") || f.contains("/weapon/") || f.contains("_chainsaw/character/wp"))
+            || ["weapon", "handgun", "shotgun", "rifle", "knife", "magnum", "red9", "blacktail", "punisher", "killer7", "riot gun", "striker", "stingray"]
+                .iter()
+                .any(|w| nl.contains(w))
+        {
+            auto_detected = Some(("OTHER".into(), "Weapons".into()));
+        } else if fl_all.iter().any(|f| f.contains(".mesh.") || f.contains(".mdf2.")) {
+            auto_detected = Some(("OTHER".into(), "Models".into()));
+        } else if fl_all.iter().any(|f| f.contains(".tex.")) {
+            auto_detected = Some(("OTHER".into(), "Textures".into()));
+        } else if fl_all.iter().any(|f| f.contains(".mot.") || f.contains(".motlist.") || f.contains(".motbank.")) {
+            auto_detected = Some(("OTHER".into(), "Animations".into()));
+        } else if fl_all.iter().any(|f| f.contains(".sbnk.") || f.contains(".pck.") || f.contains(".wem.") || f.contains(".bnk.") || f.contains("/sound/") || f.contains("/wwise/")) {
+            auto_detected = Some(("OTHER".into(), "Music".into()));
+        } else if fl_all.iter().any(|f| f.contains(".msg.") || f.contains(".gui.") || f.contains("/gui/") || f.contains("/font/")) {
+            auto_detected = Some(("OTHER".into(), "Text".into()));
+        }
+    }
+
+    let (primary_group, primary_cat) = if let Some((ug, uc)) = user_override {
+        (ug.clone(), uc.clone())
+    } else if let Some(first) = parsed.first() {
+        first.clone()
+    } else if let Some(ad) = auto_detected.clone() {
+        ad
+    } else {
+        ("OTHER".to_string(), "Misc".to_string())
+    };
+
+    let mut clean_tags: Vec<String> = vec![primary_cat.clone()];
+    for (_, c) in &parsed {
+        if !clean_tags.iter().any(|t| t.eq_ignore_ascii_case(c)) {
+            clean_tags.push(c.clone());
+        }
+    }
+    if has_ref && !clean_tags.iter().any(|t| t.eq_ignore_ascii_case("RE Framework")) {
+        clean_tags.push("RE Framework".to_string());
+    }
+    if let Some((_, ac)) = auto_detected {
+        if !clean_tags.iter().any(|t| t.eq_ignore_ascii_case(&ac)) {
+            clean_tags.push(ac);
+        }
+    }
+    for et in extra_tags {
+        if !clean_tags.iter().any(|t| t.eq_ignore_ascii_case(&et)) {
+            clean_tags.push(et);
+        }
+    }
+
+    (primary_group, primary_cat, clean_tags)
+}
+
+fn word_match(haystack: &str, needle: &str) -> bool {
+    haystack
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| w.eq_ignore_ascii_case(needle))
 }
 
 fn plain_dest_static(re_engine: bool, rel: &str) -> Option<String> {

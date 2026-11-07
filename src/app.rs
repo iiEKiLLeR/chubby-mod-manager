@@ -29,8 +29,8 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
-    ("MOD FIX", "PAK & Loose-File Mod Fix: .pak mods (such as Berserker, outfits, and weapons) now install as numbered re_chunk_000.pak.patch_NNN.pak files with the 5-file dummy PAK barrier instead of pak_mods/ when REFramework is installed"),
-    ("MOD FIX", "REFramework LooseFileLoader: automatically enables LooseFileLoader_Enabled=true in re2_fw_config.txt so natives/stm/... mods apply in-game immediately"),
+    ("CATEGORIES", "Mod Category Browser & Auto-Sorting: added a dedicated CHARACTERS & OTHER category navigator with live mod counts, active status dots, grouped category headers, and one-click category switching"),
+    ("MOD FIX", "PAK & Loose-File Mod Fix: .pak mods (such as Berserker, outfits, and weapons) install as numbered re_chunk_000.pak.patch_NNN.pak files with the 5-file dummy PAK barrier, and REFramework LooseFileLoader_Enabled=true is enabled automatically"),
 ];
 
 #[derive(Clone, Debug)]
@@ -99,6 +99,9 @@ pub struct App {
     pub sel: usize,
     pub scroll: f32,
     pub filter: Filter,
+    pub selected_category: Option<(String, String)>,
+    pub cat_scroll: f32,
+    pub group_by_category: bool,
     pub fields: HashMap<Field, String>,
     pub log: Vec<(String, Color)>,
     pub toast: Option<(String, Color, f64)>,
@@ -184,6 +187,9 @@ impl App {
             sel: 0,
             scroll: 0.0,
             filter: Filter::All,
+            selected_category: None,
+            cat_scroll: 0.0,
+            group_by_category: true,
             fields,
             log: Vec::new(),
             toast: None,
@@ -616,6 +622,8 @@ impl App {
         self.lib.rar_dirs = rar_dirs;
         self.sel = 0;
         self.scroll = 0.0;
+        self.selected_category = None;
+        self.cat_scroll = 0.0;
         self.shots.clear();
         self.mods_sig = self.mods_signature();
         if let Some(s) = &self.coop {
@@ -715,7 +723,8 @@ impl App {
 
     pub fn visible(&self) -> Vec<usize> {
         let q = self.fields.get(&Field::Search).cloned().unwrap_or_default().to_lowercase();
-        self.lib
+        let mut v: Vec<usize> = self
+            .lib
             .mods
             .iter()
             .enumerate()
@@ -724,14 +733,116 @@ impl App {
                 Filter::Installed => m.installed,
                 Filter::Available => !m.installed,
             })
+            .filter(|(_, m)| match &self.selected_category {
+                None => true,
+                Some((grp, cat)) => {
+                    (m.cat_group.eq_ignore_ascii_case(grp) && m.cat_name.eq_ignore_ascii_case(cat))
+                        || m.categories.iter().any(|c| c.eq_ignore_ascii_case(cat))
+                }
+            })
             .filter(|(_, m)| {
                 q.is_empty()
                     || m.name.to_lowercase().contains(&q)
                     || m.author.to_lowercase().contains(&q)
+                    || m.cat_name.to_lowercase().contains(&q)
                     || m.categories.iter().any(|c| c.to_lowercase().contains(&q))
             })
             .map(|(i, _)| i)
-            .collect()
+            .collect();
+
+        if self.group_by_category && self.selected_category.is_none() {
+            let chars = games::character_categories(self.game().id);
+            let others = games::other_categories(self.game().id);
+            let rank = |m: &mods::ModEntry| -> (u8, usize, i32, String) {
+                let g_rank = if m.cat_group == "CHARACTERS" { 0u8 } else { 1u8 };
+                let c_rank = if g_rank == 0 {
+                    chars.iter().position(|c| c.eq_ignore_ascii_case(&m.cat_name)).unwrap_or(99)
+                } else {
+                    others.iter().position(|c| c.eq_ignore_ascii_case(&m.cat_name)).unwrap_or(99)
+                };
+                (g_rank, c_rank, -m.menu_priority, m.name.to_lowercase())
+            };
+            v.sort_by_key(|&i| rank(&self.lib.mods[i]));
+        }
+        v
+    }
+
+    /// Returns `(characters_list, other_list)` where each entry is `(category_name, total_mods, installed_mods)`.
+    pub fn category_tree(&self) -> (Vec<(String, usize, usize)>, Vec<(String, usize, usize)>) {
+        let gid = self.game().id;
+        let mut char_names: Vec<String> = games::character_categories(gid).iter().map(|s| s.to_string()).collect();
+        let mut other_names: Vec<String> = games::other_categories(gid).iter().map(|s| s.to_string()).collect();
+
+        for m in &self.lib.mods {
+            if m.cat_group == "CHARACTERS" {
+                if !char_names.iter().any(|c| c.eq_ignore_ascii_case(&m.cat_name)) && !m.cat_name.is_empty() {
+                    char_names.push(m.cat_name.clone());
+                }
+            } else if !other_names.iter().any(|c| c.eq_ignore_ascii_case(&m.cat_name)) && !m.cat_name.is_empty() {
+                other_names.push(m.cat_name.clone());
+            }
+        }
+
+        let count_for = |grp: &str, cat: &str| -> (usize, usize) {
+            let mut total = 0;
+            let mut inst = 0;
+            for m in &self.lib.mods {
+                let matches = (m.cat_group.eq_ignore_ascii_case(grp) && m.cat_name.eq_ignore_ascii_case(cat))
+                    || (grp == "OTHER" && m.categories.iter().any(|c| c.eq_ignore_ascii_case(cat)));
+                if matches {
+                    total += 1;
+                    if m.installed {
+                        inst += 1;
+                    }
+                }
+            }
+            (total, inst)
+        };
+
+        let chars_out = char_names
+            .into_iter()
+            .map(|c| {
+                let (t, i) = count_for("CHARACTERS", &c);
+                (c, t, i)
+            })
+            .collect();
+        let others_out = other_names
+            .into_iter()
+            .map(|c| {
+                let (t, i) = count_for("OTHER", &c);
+                (c, t, i)
+            })
+            .collect();
+        (chars_out, others_out)
+    }
+
+    pub fn cycle_mod_category(&mut self, key: &str) {
+        let gid = self.game().id;
+        let mut all: Vec<(String, String)> = Vec::new();
+        for &c in games::character_categories(gid) {
+            all.push(("CHARACTERS".to_string(), c.to_string()));
+        }
+        for &c in games::other_categories(gid) {
+            all.push(("OTHER".to_string(), c.to_string()));
+        }
+        if all.is_empty() {
+            return;
+        }
+        let cur = self
+            .lib
+            .mods
+            .iter()
+            .find(|m| m.key == key)
+            .map(|m| (m.cat_group.clone(), m.cat_name.clone()))
+            .unwrap_or_else(|| ("OTHER".to_string(), "Misc".to_string()));
+        let idx = all
+            .iter()
+            .position(|(g, c)| g.eq_ignore_ascii_case(&cur.0) && c.eq_ignore_ascii_case(&cur.1))
+            .map(|i| (i + 1) % all.len())
+            .unwrap_or(0);
+        let (ng, nc) = &all[idx];
+        self.lib.set_mod_category(key, ng, nc);
+        self.say(Ok(format!("Moved mod to {} › {}.", ng, nc)));
     }
 
     pub fn selected_key(&self) -> Option<String> {
@@ -1212,7 +1323,15 @@ impl App {
                     }
                 }
             }
-            Action::Back => self.tab = Tab::Mods,
+            Action::Back => {
+                if self.tab == Tab::Mods && self.selected_category.is_some() {
+                    self.selected_category = None;
+                    self.sel = 0;
+                    self.scroll = 0.0;
+                } else {
+                    self.tab = Tab::Mods;
+                }
+            }
             Action::NextGame => self.select_game((self.game_idx + 1) % games::GAMES.len()),
             Action::PrevGame => self.select_game((self.game_idx + games::GAMES.len() - 1) % games::GAMES.len()),
             Action::Refresh => self.run_job("Refreshing", |_| vec![], None),

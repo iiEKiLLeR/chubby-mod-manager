@@ -336,83 +336,388 @@ impl App {
             _ => {}
         }
 
-        let list_r = Rect::new(area.x, area.y + 44.0, (area.w * 0.56).floor(), area.h - 44.0);
-        let det_r = Rect::new(list_r.x + list_r.w + 10.0, list_r.y, area.w - list_r.w - 10.0, list_r.h);
+        let cat_w = 202.0;
+        let cat_r = Rect::new(area.x, area.y + 44.0, cat_w, area.h - 44.0);
+        let rem_w = area.w - cat_w - 20.0;
+        let list_w = (rem_w * 0.54).floor();
+        let list_r = Rect::new(cat_r.x + cat_r.w + 10.0, cat_r.y, list_w, cat_r.h);
+        let det_r = Rect::new(list_r.x + list_r.w + 10.0, list_r.y, rem_w - list_w, list_r.h);
+
+        self.draw_categories_panel(cat_r);
         self.ui.panel(list_r, t.panel);
+
+        // Top context header inside the mod list so it's always obvious which category is shown.
         let vis = self.visible();
-        if self.lib.mods.is_empty() {
-            self.draw_empty(list_r);
-        } else {
-            let row = 42.0;
-            if self.ui.hover(list_r) && self.ui.wheel != 0.0 {
-                self.scroll -= self.ui.wheel.signum() * row * 2.0;
+        let hdr_r = Rect::new(list_r.x + 6.0, list_r.y + 6.0, list_r.w - 12.0, 32.0);
+        fill_rrect(hdr_r, 6.0, t.panel2);
+        stroke_rrect(hdr_r, 6.0, 1.0, t.line);
+        if let Some((grp, cat)) = self.selected_category.clone() {
+            let title = format!("{}  >  {} ({})", grp, cat.to_uppercase(), vis.len());
+            let fit_t = self.ui.fit(&title, 14.0, hdr_r.w - 116.0);
+            self.ui.btext(&fit_t, hdr_r.x + 12.0, hdr_r.y + 21.0, 14.0, t.accent_hi);
+            let all_btn = Rect::new(hdr_r.x + hdr_r.w - 102.0, hdr_r.y + 4.0, 96.0, 24.0);
+            if self.ui.button(all_btn, "Show All Mods", 1, true) {
+                self.selected_category = None;
+                self.sel = 0;
+                self.scroll = 0.0;
             }
-            let max_scroll = (vis.len() as f32 * row - (list_r.h - 12.0)).max(0.0);
-            self.scroll = self.scroll.clamp(0.0, max_scroll);
-            let top = list_r.y + 6.0;
-            let mut toggle = None;
+        } else {
+            let title = format!("ALL MODS ({})", vis.len());
+            self.ui.btext(&title, hdr_r.x + 12.0, hdr_r.y + 21.0, 14.0, t.text);
+            let grp_label = if self.group_by_category { "Category Headers: ON" } else { "Category Headers: OFF" };
+            let gw = self.ui.width(grp_label, 12.5) + 20.0;
+            let grp_btn = Rect::new(hdr_r.x + hdr_r.w - gw - 6.0, hdr_r.y + 4.0, gw, 24.0);
+            let ghov = self.ui.hover(grp_btn);
+            fill_rrect(grp_btn, 5.0, if self.group_by_category { t.accent_soft } else if ghov { t.btn_hover } else { t.field_bg });
+            stroke_rrect(grp_btn, 5.0, 1.0, if self.group_by_category { t.accent } else { t.line });
+            self.ui.text(grp_label, grp_btn.x + 10.0, grp_btn.y + 16.5, 12.5, if self.group_by_category { t.text } else { t.muted });
+            if self.ui.click(grp_btn) {
+                self.group_by_category = !self.group_by_category;
+            }
+        }
+
+        let body_r = Rect::new(list_r.x, list_r.y + 42.0, list_r.w, list_r.h - 42.0);
+        if self.lib.mods.is_empty() {
+            self.draw_empty(body_r);
+        } else {
+            enum DisplayItem {
+                Header(String, String, usize, usize),
+                Mod(usize, usize),
+            }
+            let mut items: Vec<DisplayItem> = Vec::new();
+            let show_headers = self.group_by_category && self.selected_category.is_none();
+            let mut last_cat: Option<(String, String)> = None;
             for (vi, &mi) in vis.iter().enumerate() {
-                let y = top + vi as f32 * row - self.scroll;
-                if y + row < list_r.y || y > list_r.y + list_r.h - row {
-                    continue;
+                if show_headers {
+                    let m = &self.lib.mods[mi];
+                    let key = (m.cat_group.clone(), m.cat_name.clone());
+                    if last_cat.as_ref() != Some(&key) {
+                        let cnt = vis
+                            .iter()
+                            .filter(|&&idx| {
+                                let om = &self.lib.mods[idx];
+                                om.cat_group == key.0 && om.cat_name == key.1
+                            })
+                            .count();
+                        let icnt = vis
+                            .iter()
+                            .filter(|&&idx| {
+                                let om = &self.lib.mods[idx];
+                                om.cat_group == key.0 && om.cat_name == key.1 && om.installed
+                            })
+                            .count();
+                        items.push(DisplayItem::Header(key.0.clone(), key.1.clone(), cnt, icnt));
+                        last_cat = Some(key);
+                    }
                 }
-                let m = self.lib.mods[mi].clone();
-                let rr = Rect::new(list_r.x + 6.0, y, list_r.w - 14.0, row - 3.0);
-                if vi == self.sel {
-                    fill_rrect(rr, 6.0, t.accent_soft);
-                    stroke_rrect(rr, 6.0, 1.0, Color::new(t.accent.r, t.accent.g, t.accent.b, 0.35));
-                    fill_rrect(Rect::new(rr.x + 2.0, rr.y + 6.0, 3.5, rr.h - 12.0), 1.5, t.accent_hi);
-                } else if self.ui.hover(rr) {
-                    fill_rrect(rr, 6.0, Color::new(1.0, 1.0, 1.0, 0.04));
+                items.push(DisplayItem::Mod(vi, mi));
+            }
+
+            let total_h: f32 = items
+                .iter()
+                .map(|it| match it {
+                    DisplayItem::Header(..) => 30.0,
+                    DisplayItem::Mod(..) => 44.0,
+                })
+                .sum();
+
+            if self.ui.hover(body_r) && self.ui.wheel != 0.0 {
+                self.scroll -= self.ui.wheel.signum() * 44.0 * 2.0;
+            }
+            let max_scroll = (total_h - (body_r.h - 10.0)).max(0.0);
+            self.scroll = self.scroll.clamp(0.0, max_scroll);
+            let mut cur_y = body_r.y + 4.0 - self.scroll;
+            let mut toggle = None;
+            let mut pick_cat = None;
+
+            for it in &items {
+                match it {
+                    DisplayItem::Header(grp, cat, cnt, icnt) => {
+                        let h = 28.0;
+                        if cur_y >= body_r.y - 4.0 && cur_y + h <= body_r.y + body_r.h {
+                            let hr = Rect::new(body_r.x + 8.0, cur_y + 2.0, body_r.w - 18.0, h - 4.0);
+                            let hhov = self.ui.hover(hr);
+                            fill_rrect(hr, 5.0, if hhov { t.accent_soft } else { Color::new(t.accent.r, t.accent.g, t.accent.b, 0.13) });
+                            stroke_rrect(hr, 5.0, 1.0, Color::new(t.accent.r, t.accent.g, t.accent.b, if hhov { 0.55 } else { 0.28 }));
+                            fill_rrect(Rect::new(hr.x + 2.0, hr.y + 4.0, 3.0, hr.h - 8.0), 1.5, t.accent_hi);
+                            let hlabel = format!("{}  >  {}", grp, cat.to_uppercase());
+                            self.ui.btext(&hlabel, hr.x + 12.0, hr.y + 17.0, 13.0, t.accent_hi);
+                            let right_txt = if *icnt > 0 {
+                                format!("{} active / {} total", icnt, cnt)
+                            } else {
+                                format!("{} mod{}", cnt, if *cnt == 1 { "" } else { "s" })
+                            };
+                            let rw = self.ui.width(&right_txt, 12.0);
+                            self.ui.text(&right_txt, hr.x + hr.w - rw - 10.0, hr.y + 16.5, 12.0, if *icnt > 0 { t.good } else { t.muted });
+                            if self.ui.click(hr) {
+                                pick_cat = Some((grp.clone(), cat.clone()));
+                            }
+                        }
+                        cur_y += 30.0;
+                    }
+                    DisplayItem::Mod(vi, mi) => {
+                        let row = 44.0;
+                        if cur_y >= body_r.y - 4.0 && cur_y + row <= body_r.y + body_r.h + 2.0 {
+                            let m = self.lib.mods[*mi].clone();
+                            let rr = Rect::new(body_r.x + 6.0, cur_y, body_r.w - 14.0, row - 3.0);
+                            if *vi == self.sel {
+                                fill_rrect(rr, 6.0, t.accent_soft);
+                                stroke_rrect(rr, 6.0, 1.0, Color::new(t.accent.r, t.accent.g, t.accent.b, 0.35));
+                                fill_rrect(Rect::new(rr.x + 2.0, rr.y + 6.0, 3.5, rr.h - 12.0), 1.5, t.accent_hi);
+                            } else if self.ui.hover(rr) {
+                                fill_rrect(rr, 6.0, Color::new(1.0, 1.0, 1.0, 0.04));
+                            }
+                            if m.installed {
+                                draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 7.0, Color::new(t.good.r, t.good.g, t.good.b, 0.22));
+                                draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 4.5, t.good);
+                            } else {
+                                draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 4.5, Color::new(t.muted.r, t.muted.g, t.muted.b, 0.45));
+                            }
+                            let bw = 88.0;
+                            let mut tx = rr.x + rr.w - bw - 10.0;
+                            if !m.conflicts.is_empty() {
+                                tx -= self.ui.width("shares files", 11.5) + 14.0;
+                                self.ui.tag(tx, rr.y + 11.0, "shares files", t.warn);
+                            }
+                            if !m.version.is_empty() {
+                                let v = self.ui.fit(&m.version, 11.5, 56.0);
+                                tx -= self.ui.width(&v, 11.5) + 14.0;
+                                self.ui.tag(tx, rr.y + 11.0, &v, t.muted);
+                            }
+                            if !m.cat_name.is_empty() {
+                                let ctag = self.ui.fit(&m.cat_name, 11.5, 92.0);
+                                tx -= self.ui.width(&ctag, 11.5) + 14.0;
+                                self.ui.tag(tx, rr.y + 11.0, &ctag, t.accent_hi);
+                            }
+                            let nm = self.ui.fit(&m.name, 15.5, (tx - rr.x - 38.0).max(60.0));
+                            if *vi == self.sel {
+                                self.ui.btext(&nm, rr.x + 30.0, rr.y + 25.5, 15.5, t.text);
+                            } else {
+                                self.ui.text(&nm, rr.x + 30.0, rr.y + 25.5, 15.5, t.text);
+                            }
+                            let br = Rect::new(rr.x + rr.w - bw - 4.0, rr.y + 5.0, bw, rr.h - 10.0);
+                            let label = if m.installed { "Uninstall" } else { "Install" };
+                            if self.ui.button(br, label, if m.installed { 0 } else { 1 }, !busy && (m.size > 0 || m.installed)) {
+                                self.sel = *vi;
+                                toggle = Some(m.key.clone());
+                            }
+                            if self.ui.click(rr) {
+                                self.sel = *vi;
+                            }
+                        }
+                        cur_y += row;
+                    }
                 }
-                if m.installed {
-                    draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 7.0, Color::new(t.good.r, t.good.g, t.good.b, 0.22));
-                    draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 4.5, t.good);
-                } else {
-                    draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 4.5, Color::new(t.muted.r, t.muted.g, t.muted.b, 0.45));
-                }
-                let bw = 92.0;
-                let mut tx = rr.x + rr.w - bw - 12.0;
-                if !m.conflicts.is_empty() {
-                    tx -= self.ui.width("shares files", 12.0) + 16.0;
-                    self.ui.tag(tx, rr.y + 10.0, "shares files", t.warn);
-                }
-                if !m.version.is_empty() {
-                    let v = self.ui.fit(&m.version, 12.0, 60.0);
-                    tx -= self.ui.width(&v, 12.0) + 16.0;
-                    self.ui.tag(tx, rr.y + 10.0, &v, t.muted);
-                }
-                let nm = self.ui.fit(&m.name, 16.0, tx - rr.x - 40.0);
-                if vi == self.sel {
-                    self.ui.btext(&nm, rr.x + 32.0, rr.y + 25.0, 16.0, t.text);
-                } else {
-                    self.ui.text(&nm, rr.x + 32.0, rr.y + 25.0, 16.0, t.text);
-                }
-                let br = Rect::new(rr.x + rr.w - bw - 4.0, rr.y + 5.0, bw, rr.h - 10.0);
-                let label = if m.installed { "Uninstall" } else { "Install" };
-                if self.ui.button(br, label, if m.installed { 0 } else { 1 }, !busy && (m.size > 0 || m.installed)) {
-                    self.sel = vi;
-                    toggle = Some(m.key.clone());
-                }
-                if self.ui.click(rr) {
-                    self.sel = vi;
-                }
+            }
+            if let Some(cat_pair) = pick_cat {
+                self.selected_category = Some(cat_pair);
+                self.sel = 0;
+                self.scroll = 0.0;
             }
             if let Some(k) = toggle {
                 self.toggle_mod(k);
             }
             if vis.is_empty() {
-                self.ui.text("No mods match this filter.", list_r.x + 20.0, list_r.y + 40.0, 16.0, t.muted);
+                if let Some((grp, cat)) = self.selected_category.clone() {
+                    let msg1 = format!("No mods in {} > {} yet.", grp, cat);
+                    let msg2 = "Drop a .zip, .rar, .7z or .pak mod onto this window, or view all mods.";
+                    self.ui.btext(&msg1, body_r.x + 22.0, body_r.y + 46.0, 17.0, t.text);
+                    self.ui.text(msg2, body_r.x + 22.0, body_r.y + 72.0, 14.0, t.muted);
+                    if self.ui.button(Rect::new(body_r.x + 22.0, body_r.y + 92.0, 140.0, 34.0), "Show All Mods", 1, true) {
+                        self.selected_category = None;
+                        self.sel = 0;
+                        self.scroll = 0.0;
+                    }
+                } else {
+                    self.ui.text("No mods match this filter.", body_r.x + 20.0, body_r.y + 40.0, 16.0, t.muted);
+                }
             }
             if max_scroll > 0.0 {
-                let frac = (list_r.h - 12.0) / (vis.len() as f32 * row);
-                let bh = (list_r.h * frac).max(30.0);
-                let by = list_r.y + 4.0 + (list_r.h - 8.0 - bh) * (self.scroll / max_scroll);
-                fill_rrect(Rect::new(list_r.x + list_r.w - 6.0, by, 3.5, bh), 1.5, t.accent_hi);
+                let frac = (body_r.h - 10.0) / total_h;
+                let bh = (body_r.h * frac).max(30.0);
+                let by = body_r.y + 4.0 + (body_r.h - 8.0 - bh) * (self.scroll / max_scroll);
+                fill_rrect(Rect::new(body_r.x + body_r.w - 6.0, by, 3.5, bh), 1.5, t.accent_hi);
             }
         }
         self.drawn.push("modlist");
         self.draw_detail(det_r);
+    }
+
+    /// Left-hand Category Navigator inspired by Fluffy Mod Manager's CHARACTERS & OTHER
+    /// category list, redesigned with clear status indicators, counts, and one-click filtering.
+    fn draw_categories_panel(&mut self, r: Rect) {
+        let t = *self.ui.theme();
+        self.ui.panel(r, t.panel);
+
+        let total_mods = self.lib.mods.len();
+        let total_inst = self.lib.state.mods.len();
+        let all_on = self.selected_category.is_none();
+        let all_r = Rect::new(r.x + 8.0, r.y + 8.0, r.w - 16.0, 32.0);
+        let all_hov = self.ui.hover(all_r);
+        fill_rrect(
+            all_r,
+            6.0,
+            if all_on {
+                t.accent_soft
+            } else if all_hov {
+                t.btn_hover
+            } else {
+                t.panel2
+            },
+        );
+        stroke_rrect(all_r, 6.0, 1.2, if all_on { t.accent_hi } else { t.line_hi });
+        let lbl = format!("All mods ({})", total_mods);
+        let lw = self.ui.width(&lbl, 14.5);
+        if total_inst > 0 {
+            draw_circle(all_r.x + 14.0, all_r.y + 16.0, 4.5, t.good);
+        }
+        self.ui.btext(&lbl, all_r.x + (all_r.w - lw) / 2.0, all_r.y + 21.0, 14.5, t.text);
+        if self.ui.click(all_r) {
+            self.selected_category = None;
+            self.sel = 0;
+            self.scroll = 0.0;
+        }
+
+        let (chars, others) = self.category_tree();
+        let list_top = r.y + 46.0;
+        let list_h = r.h - 52.0;
+        let body = Rect::new(r.x, list_top, r.w, list_h);
+
+        let sec_h = 26.0;
+        let row_h = 29.0;
+        let content_h = sec_h * 2.0 + (chars.len() + others.len()) as f32 * row_h + 10.0;
+        if self.ui.hover(body) && self.ui.wheel != 0.0 {
+            self.cat_scroll -= self.ui.wheel.signum() * row_h * 2.0;
+        }
+        let max_scroll = (content_h - list_h).max(0.0);
+        self.cat_scroll = self.cat_scroll.clamp(0.0, max_scroll);
+
+        let mut y = list_top - self.cat_scroll;
+        let mut clicked_cat: Option<(String, String)> = None;
+
+        for (section_title, group_key, entries) in [("CHARACTERS", "CHARACTERS", &chars), ("OTHER", "OTHER", &others)] {
+            if y >= list_top - 4.0 && y + sec_h <= list_top + list_h + 2.0 {
+                let sr = Rect::new(r.x + 8.0, y + 2.0, r.w - 16.0, sec_h - 4.0);
+                // Crisp high-contrast section banner like Fluffy's CHARACTERS / OTHER bar
+                fill_rrect(sr, 4.0, Color::new(t.text.r, t.text.g, t.text.b, 0.92));
+                let sw = self.ui.width(section_title, 13.0);
+                self.ui.btext(section_title, sr.x + (sr.w - sw) / 2.0, sr.y + 16.0, 13.0, Color::new(0.06, 0.07, 0.09, 1.0));
+            }
+            y += sec_h;
+
+            for (cname, count, inst_count) in entries {
+                if y >= list_top - 4.0 && y + row_h <= list_top + list_h + 2.0 {
+                    let is_sel = self
+                        .selected_category
+                        .as_ref()
+                        .map(|(g, c)| g.eq_ignore_ascii_case(group_key) && c.eq_ignore_ascii_case(cname))
+                        .unwrap_or(false);
+                    let sq = Rect::new(r.x + 8.0, y + 2.0, 22.0, row_h - 4.0);
+                    let bar = Rect::new(r.x + 33.0, y + 2.0, r.w - 41.0, row_h - 4.0);
+                    let full_row = Rect::new(r.x + 8.0, y + 2.0, r.w - 16.0, row_h - 4.0);
+                    let hov = self.ui.hover(full_row);
+
+                    // Left status square (shows installed / populated status at a glance)
+                    fill_rrect(
+                        sq,
+                        4.0,
+                        if *inst_count > 0 {
+                            Color::new(t.good.r, t.good.g, t.good.b, 0.22)
+                        } else if *count > 0 {
+                            t.accent_soft
+                        } else {
+                            t.field_bg
+                        },
+                    );
+                    stroke_rrect(
+                        sq,
+                        4.0,
+                        1.0,
+                        if *inst_count > 0 {
+                            t.good
+                        } else if is_sel {
+                            t.accent_hi
+                        } else {
+                            t.line
+                        },
+                    );
+                    if *inst_count > 0 {
+                        draw_circle(sq.x + sq.w / 2.0, sq.y + sq.h / 2.0, 4.0, t.good);
+                    } else if *count > 0 {
+                        draw_circle(sq.x + sq.w / 2.0, sq.y + sq.h / 2.0, 3.0, t.accent_hi);
+                    }
+
+                    // Category button bar
+                    fill_rrect(
+                        bar,
+                        4.0,
+                        if is_sel {
+                            t.accent_soft
+                        } else if hov {
+                            t.btn_hover
+                        } else {
+                            t.panel2
+                        },
+                    );
+                    stroke_rrect(
+                        bar,
+                        4.0,
+                        if is_sel { 1.4 } else { 1.0 },
+                        if is_sel {
+                            t.accent_hi
+                        } else if hov {
+                            t.line_hi
+                        } else {
+                            t.line
+                        },
+                    );
+
+                    let label = format!("{} ({})", cname, count);
+                    let fit_lbl = self.ui.fit(&label, 13.5, bar.w - 12.0);
+                    let lw = self.ui.width(&fit_lbl, 13.5);
+                    let txt_col = if is_sel {
+                        t.accent_hi
+                    } else if *count > 0 {
+                        t.text
+                    } else {
+                        t.muted
+                    };
+                    if *count > 0 || is_sel {
+                        self.ui.btext(&fit_lbl, bar.x + (bar.w - lw) / 2.0, bar.y + 17.5, 13.5, txt_col);
+                    } else {
+                        self.ui.text(&fit_lbl, bar.x + (bar.w - lw) / 2.0, bar.y + 17.5, 13.5, txt_col);
+                    }
+
+                    if self.ui.click(full_row) {
+                        clicked_cat = Some((group_key.to_string(), cname.clone()));
+                    }
+                }
+                y += row_h;
+            }
+            y += 4.0;
+        }
+
+        if let Some((g, c)) = clicked_cat {
+            let same = self
+                .selected_category
+                .as_ref()
+                .map(|( sg, sc )| sg.eq_ignore_ascii_case(&g) && sc.eq_ignore_ascii_case(&c))
+                .unwrap_or(false);
+            if same {
+                self.selected_category = None;
+            } else {
+                self.selected_category = Some((g, c));
+            }
+            self.sel = 0;
+            self.scroll = 0.0;
+        }
+
+        if max_scroll > 0.0 {
+            let frac = list_h / content_h;
+            let bh = (list_h * frac).max(24.0);
+            let by = list_top + (list_h - bh) * (self.cat_scroll / max_scroll);
+            fill_rrect(Rect::new(r.x + r.w - 5.0, by, 3.0, bh), 1.5, t.accent_hi);
+        }
     }
 
     fn draw_empty(&mut self, r: Rect) {
@@ -548,12 +853,20 @@ impl App {
         if m.installed {
             tx += self.ui.tag(tx, y, "INSTALLED", t.good) + 6.0;
         }
-        for c in m.categories.iter().take(3) {
-            tx += self.ui.tag(tx, y, c, t.accent_hi) + 6.0;
+        if !m.cat_name.is_empty() {
+            let cat_badge = format!("{} > {}", m.cat_group, m.cat_name);
+            tx += self.ui.tag(tx, y, &cat_badge, t.accent_hi) + 6.0;
         }
-        if m.categories.iter().any(|c| c.eq_ignore_ascii_case("Chubby Enhanced")) {
-            let sync_tag = format!("THEME: {}", t.name.to_uppercase());
-            let _ = self.ui.tag(tx, y, &sync_tag, t.good);
+        let chg_w = self.ui.width("Change Category", 11.5) + 14.0;
+        if tx + chg_w < r.x + r.w - 10.0 {
+            let chg_r = Rect::new(tx, y, chg_w, 20.0);
+            let chov = self.ui.hover(chg_r);
+            fill_rrect(chg_r, 4.0, if chov { t.btn_hover } else { t.field_bg });
+            stroke_rrect(chg_r, 4.0, 1.0, if chov { t.accent_hi } else { t.line_hi });
+            self.ui.text("Change Category", chg_r.x + 7.0, chg_r.y + 14.5, 11.5, if chov { t.text } else { t.muted });
+            if self.ui.click(chg_r) {
+                self.cycle_mod_category(&m.key);
+            }
         }
         y += 34.0;
         let desc = if m.description.is_empty() { "No description came with this mod.".to_string() } else { m.description.clone() };
