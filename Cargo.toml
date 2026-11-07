@@ -1,6 +1,6 @@
 [package]
 name = "chubby_mod_manager"
-version = "1.0.11"
+version = "1.0.12"
 edition = "2024"
 default-run = "chubby_mod_manager"
 

@@ -40,6 +40,8 @@ pub fn sandbox() -> PathBuf {
         fs::create_dir_all(d).unwrap();
     }
     fs::write(game.join("re4.exe"), b"fake game program").unwrap();
+    fs::write(game.join("dinput8.dll"), b"fake reframework").unwrap();
+    fs::write(game.join("re2_fw_config.txt"), b"LooseFileLoader_Enabled=false\r\nREFrameworkConfig_MenuKey_V2=45\r\n").unwrap();
     fs::write(game.join("natives/stm/a.tex"), b"ORIGINAL").unwrap();
     fs::write(game.join("re_chunk_000.pak.patch_001.pak"), b"official patch").unwrap();
     fs::write(
@@ -157,13 +159,17 @@ impl Tester {
                 if app.jobs_done > self.jobs_at && !app.is_busy() {
                     let a = fs::read(g.join("natives/stm/a.tex")).unwrap_or_default();
                     let new = g.join("natives/stm/new.tex").is_file();
-                    let pak = fs::read(g.join("re_chunk_000.pak.patch_002.pak")).unwrap_or_default();
+                    let dummy_ok = (2..=6).all(|n| fs::metadata(g.join(format!("re_chunk_000.pak.patch_{:03}.pak", n))).map(|m| m.len() == 16).unwrap_or(false));
+                    let pak = fs::read(g.join("re_chunk_000.pak.patch_007.pak")).unwrap_or_default();
+                    let no_pak_mods = !g.join("pak_mods").exists();
+                    let fw_cfg = fs::read_to_string(g.join("re2_fw_config.txt")).unwrap_or_default();
+                    let loose_ok = fw_cfg.contains("LooseFileLoader_Enabled=true");
                     let backup = app.lib.base.join("Backup/natives/stm/a.tex").is_file();
-                    let ok = a == b"MODDED" && new && pak == b"PAKDATA" && backup;
+                    let ok = a == b"MODDED" && new && dummy_ok && pak == b"PAKDATA" && no_pak_mods && loose_ok && backup;
                     self.rec(
                         "install",
                         ok,
-                        format!("Enter installed it: a.tex is {:?}, new.tex added: {}, PAK became patch_002: {}, original backed up: {}", String::from_utf8_lossy(&a), new, pak == b"PAKDATA", backup),
+                        format!("Enter installed it: a.tex is {:?}, new.tex added: {}, 5 dummy PAKs + patch_007: {}, loose loader enabled: {}, original backed up: {}", String::from_utf8_lossy(&a), new, dummy_ok && pak == b"PAKDATA" && no_pak_mods, loose_ok, backup),
                     );
                     self.next();
                 } else if self.timed_out(20.0) {
@@ -175,7 +181,7 @@ impl Tester {
                 if app.jobs_done > self.jobs_at && !app.is_busy() {
                     let a = fs::read(g.join("natives/stm/a.tex")).unwrap_or_default();
                     let new_gone = !g.join("natives/stm/new.tex").exists();
-                    let pak_gone = !g.join("re_chunk_000.pak.patch_002.pak").exists();
+                    let pak_gone = (2..=7).all(|n| !g.join(format!("re_chunk_000.pak.patch_{:03}.pak", n)).exists());
                     let official = g.join("re_chunk_000.pak.patch_001.pak").is_file();
                     let backup_gone = !app.lib.base.join("Backup/natives/stm/a.tex").exists();
                     let ok = a == b"ORIGINAL" && new_gone && pak_gone && official && backup_gone;
@@ -183,7 +189,7 @@ impl Tester {
                     self.rec(
                         "act",
                         ok && install_ok,
-                        format!("installed then uninstalled 'Test Outfit': original a.tex restored: {}, added files removed: {}, game's own patch PAK untouched: {}, backup cleaned: {}", a == b"ORIGINAL", new_gone && pak_gone, official, backup_gone),
+                        format!("installed then uninstalled 'Test Outfit': original a.tex restored: {}, added files + dummy PAKs removed: {}, game's own patch PAK untouched: {}, backup cleaned: {}", a == b"ORIGINAL", new_gone && pak_gone, official, backup_gone),
                     );
                     self.next();
                 } else if self.timed_out(20.0) {

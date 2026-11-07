@@ -89,6 +89,45 @@ fn pak_name(n: u32) -> String {
     format!("re_chunk_000.pak.patch_{:03}.pak", n)
 }
 
+/// 16-byte empty KPKA v4 PAK header written by Fluffy Mod Manager (function 0x1400de800)
+/// as a 5-file barrier (`re_chunk_000.pak.patch_NNN.pak`) between official game patch PAKs
+/// and mod patch PAKs so game updates do not collide with mod PAK numbers.
+const DUMMY_PAK: &[u8; 16] = b"KPKA\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+
+fn is_dummy_pak(p: &Path) -> bool {
+    fs::metadata(p).map(|m| m.len() == 16).unwrap_or(false)
+        && fs::read(p).map(|b| b.as_slice() == DUMMY_PAK).unwrap_or(false)
+}
+
+/// Ensure REFramework's `re2_fw_config.txt` enables `LooseFileLoader_Enabled=true`
+/// (required for `natives/stm/...` loose-file mods to load in RE Engine games)
+/// and uses F5 (VK_F5 = 116) for the menu keybind.
+pub fn ensure_reframework_config(game_dir: &Path) {
+    let fw_cfg = game_dir.join("re2_fw_config.txt");
+    if fw_cfg.is_file() {
+        if let Ok(txt) = fs::read_to_string(&fw_cfg) {
+            let mut new_txt = txt.clone();
+            if new_txt.contains("LooseFileLoader_Enabled=false") {
+                new_txt = new_txt.replace("LooseFileLoader_Enabled=false", "LooseFileLoader_Enabled=true");
+            } else if !new_txt.contains("LooseFileLoader_Enabled=") {
+                if !new_txt.ends_with('\n') && !new_txt.is_empty() {
+                    new_txt.push_str("\r\n");
+                }
+                new_txt.push_str("LooseFileLoader_Enabled=true\r\n");
+            }
+            if new_txt.contains("REFrameworkConfig_MenuKey_V2=45") {
+                new_txt = new_txt.replace("REFrameworkConfig_MenuKey_V2=45", "REFrameworkConfig_MenuKey_V2=116");
+            }
+            if new_txt != txt {
+                let _ = fsx::write_atomic(&fw_cfg, new_txt.as_bytes());
+            }
+        }
+    } else if game_dir.join("dinput8.dll").is_file() {
+        let default_cfg = "LooseFileLoader_Enabled=true\r\nREFrameworkConfig_MenuKey_V2=116\r\n";
+        let _ = fsx::write_atomic(&fw_cfg, default_cfg.as_bytes());
+    }
+}
+
 fn ext_of(p: &Path) -> String {
     p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
 }
@@ -241,6 +280,9 @@ impl Library {
             let ext = ext_of(&p);
             let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
             if ext == "pak" {
+                if size == 0 {
+                    continue;
+                }
                 let crc = cached_crc(&mut crc_cache, &p);
                 found.push(ModEntry {
                     key: fname.clone(),
@@ -276,6 +318,7 @@ impl Library {
             }
         }
         self.save_crc_cache(&crc_cache);
+        self.migrate_legacy_pak_mods(&found);
         // Installed state, conflicts, hints.
         let mut owners: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, m) in found.iter().enumerate() {
@@ -302,7 +345,10 @@ impl Library {
             m.conflicts = c;
             m.needs_reframework = self.game.re_engine
                 && !has_rf
-                && m.files.iter().any(|f| f.starts_with("natives/") || f.starts_with("reframework/"));
+                && m.files.iter().any(|f| {
+                    let fl = f.to_ascii_lowercase();
+                    fl.starts_with("natives/") || fl.starts_with("reframework/")
+                });
         }
         // Installed mods whose source vanished still show, so they can be uninstalled.
         for s in &self.state.mods {
@@ -399,6 +445,9 @@ impl Library {
                     if l.split('/').any(|c| SKIP_DIRS.contains(&c)) {
                         return false;
                     }
+                    if l.ends_with(".pak") && fs::metadata(root.join(rel)).map(|m| m.len() == 0).unwrap_or(false) {
+                        return false;
+                    }
                     if !l.contains('/') {
                         if l == "modinfo.ini" || Some(&l) == shot_rel.as_ref() {
                             return false;
@@ -422,18 +471,110 @@ impl Library {
         plain_dest_static(self.game.re_engine, rel)
     }
 
-    // ---------- install / uninstall ----------
-
-    fn next_pak_number(&self, game_dir: &Path) -> u32 {
-        let mut max = 0;
-        if let Ok(rd) = fs::read_dir(game_dir) {
-            for e in rd.flatten() {
-                if let Some(n) = pak_number(&e.file_name().to_string_lossy()) {
-                    max = max.max(n);
+    /// Migrate any `.pak` mod files that an earlier build placed in `pak_mods/x0001-*.pak`
+    /// over to `re_chunk_000.pak.patch_NNN.pak` (with the 5-file dummy PAK barrier), and
+    /// ensure `re2_fw_config.txt` enables `LooseFileLoader_Enabled=true`.
+    fn migrate_legacy_pak_mods(&mut self, found: &[ModEntry]) {
+        if !self.game.re_engine {
+            return;
+        }
+        let Some(gd) = self.game_dir.clone() else { return };
+        ensure_reframework_config(&gd);
+        let mut changed = false;
+        let mut pending: Vec<InstalledFile> = Vec::new();
+        for mi in 0..self.state.mods.len() {
+            for fi in 0..self.state.mods[mi].files.len() {
+                let src_rel = self.state.mods[mi].files[fi].src_rel.clone();
+                let old_dest = self.state.mods[mi].files[fi].dest.clone();
+                if self.plain_dest(&src_rel).is_none() && old_dest.to_ascii_lowercase().starts_with("pak_mods/") {
+                    let new_dest = pak_name(self.allocate_patch_pak(&gd, &pending));
+                    let old_path = gd.join(&old_dest);
+                    let new_path = gd.join(&new_dest);
+                    let moved = if old_path.is_file() {
+                        fs::rename(&old_path, &new_path).is_ok()
+                            || copy_retry(&old_path, &new_path).map(|_| { let _ = fs::remove_file(&old_path); }).is_ok()
+                    } else if let Some(src_mod) = found.iter().find(|m| m.key == self.state.mods[mi].key) {
+                        copy_retry(&src_mod.root.join(&src_rel), &new_path).is_ok()
+                    } else {
+                        false
+                    };
+                    if moved {
+                        if let Some(p) = old_path.parent() {
+                            fsx::prune_empty_dirs(p, &gd);
+                        }
+                        self.state.originals.retain(|(d, _)| !d.eq_ignore_ascii_case(&old_dest));
+                        self.state.originals.push((new_dest.clone(), false));
+                        self.state.mods[mi].files[fi].dest = new_dest;
+                        pending.push(self.state.mods[mi].files[fi].clone());
+                        changed = true;
+                    }
                 }
             }
         }
-        max + 1
+        if changed {
+            self.save_state();
+        }
+    }
+
+    // ---------- install / uninstall ----------
+
+    /// Find the next patch PAK slot (`re_chunk_000.pak.patch_NNN.pak`) in `game_dir`.
+    /// Matches Fluffy Mod Manager's `0x1400deb40`: scans `001..999`, ensures 5 16-byte dummy
+    /// PAKs separate the game's own patch PAKs from mod patch PAKs, and returns the first free
+    /// mod patch PAK number.
+    fn allocate_patch_pak(&self, game_dir: &Path, pending: &[InstalledFile]) -> u32 {
+        let mut seen_dummy = false;
+        let mut first_free = 1u32;
+        for i in 1..1000u32 {
+            let name = pak_name(i);
+            let p = game_dir.join(&name);
+            if !p.is_file() {
+                first_free = i;
+                break;
+            }
+            if is_dummy_pak(&p) {
+                seen_dummy = true;
+            } else if seen_dummy {
+                let owned = self.state.mods.iter().any(|m| m.files.iter().any(|f| f.dest.eq_ignore_ascii_case(&name)))
+                    || pending.iter().any(|f| f.dest.eq_ignore_ascii_case(&name));
+                if !owned {
+                    seen_dummy = false;
+                }
+            }
+        }
+        if !seen_dummy {
+            for k in 0..5u32 {
+                let dp = game_dir.join(pak_name(first_free + k));
+                let _ = fsx::write_atomic(&dp, DUMMY_PAK);
+            }
+            first_free + 5
+        } else {
+            first_free
+        }
+    }
+
+    /// Remove trailing 16-byte dummy patch PAKs once no mod patch PAKs remain after them
+    /// (matches Fluffy Mod Manager's `0x1400de900`).
+    fn cleanup_dummy_paks(game_dir: &Path) {
+        let mut last_real = 0u32;
+        for i in 1..1000u32 {
+            let p = game_dir.join(pak_name(i));
+            if !p.is_file() {
+                break;
+            }
+            if !is_dummy_pak(&p) {
+                last_real = i;
+            }
+        }
+        for i in (last_real + 1)..1000u32 {
+            let p = game_dir.join(pak_name(i));
+            if !p.is_file() {
+                break;
+            }
+            if is_dummy_pak(&p) {
+                let _ = fs::remove_file(&p);
+            }
+        }
     }
 
     fn owner_count(&self, dest: &str) -> usize {
@@ -470,19 +611,7 @@ impl Library {
             let src = m.root.join(rel);
             let dest = match self.plain_dest(rel) {
                 Some(d) => d,
-                // Like the original (0x14008c100): with REFramework installed, PAK mods go to
-                // pak_mods\x0001-<name>.pak; without it they become the next numbered patch PAK.
-                None if game_dir.join("dinput8.dll").is_file() => {
-                    let stem = Path::new(rel).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                    let mut n = 1;
-                    while game_dir.join(format!("pak_mods/x{:04}-{}.pak", n, stem)).exists()
-                        || fs::read_dir(game_dir.join("pak_mods")).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with(&format!("x{:04}-", n)))).unwrap_or(false)
-                    {
-                        n += 1;
-                    }
-                    format!("pak_mods/x{:04}-{}.pak", n, stem)
-                }
-                None => pak_name(self.next_pak_number(&game_dir)),
+                None => pak_name(self.allocate_patch_pak(&game_dir, &im.files)),
             };
             if !fsx::safe_rel(&dest) {
                 continue;
@@ -516,6 +645,9 @@ impl Library {
             }
         }
         let n = im.files.len();
+        if self.game.re_engine {
+            ensure_reframework_config(&game_dir);
+        }
         self.state.mods.push(im);
         self.save_state();
         self.refresh_flags();
@@ -577,6 +709,7 @@ impl Library {
             if let Some(n) = pak_number(&f.dest).filter(|_| self.plain_dest(&f.src_rel).is_none()) {
                 let _ = fs::remove_file(&dpath);
                 self.close_pak_gap(game_dir, n, idx);
+                Self::cleanup_dummy_paks(game_dir);
                 self.state.originals.retain(|(d, _)| !d.eq_ignore_ascii_case(&f.dest));
                 continue;
             }
@@ -623,10 +756,7 @@ impl Library {
                         }
                     }
                     if let Some(p) = dpath.parent() {
-                        // pak_mods stays even when empty (change-log v3.075).
-                        if !p.ends_with("pak_mods") {
-                            fsx::prune_empty_dirs(p, game_dir);
-                        }
+                        fsx::prune_empty_dirs(p, game_dir);
                     }
                 }
             }
@@ -936,7 +1066,8 @@ impl Library {
 }
 
 fn plain_dest_static(re_engine: bool, rel: &str) -> Option<String> {
-    if re_engine && !rel.contains('/') && rel.to_ascii_lowercase().ends_with(".pak") {
+    let l = rel.to_ascii_lowercase();
+    if re_engine && l.ends_with(".pak") && !l.starts_with("natives/") && !l.starts_with("reframework/") {
         None
     } else {
         Some(rel.to_string())
@@ -1043,7 +1174,16 @@ fn find_roots(dir: &Path) -> Vec<PathBuf> {
                 .map(|e| e.path())
                 .filter(|p| {
                     let n = p.file_name().unwrap().to_string_lossy().to_lowercase();
-                    !SKIP_DIRS.contains(&n.as_str()) && n != ".remh-stamp"
+                    if SKIP_DIRS.contains(&n.as_str()) || n == ".remh-stamp" {
+                        return false;
+                    }
+                    if p.is_file() {
+                        let e = n.rsplit('.').next().unwrap_or("");
+                        if ["txt", "md", "url", "png", "jpg", "jpeg", "ini", "nfo", "pdf"].contains(&e) && n != "dinput8.ini" {
+                            return false;
+                        }
+                    }
+                    true
                 })
                 .collect(),
             Err(_) => break,

@@ -29,7 +29,8 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
-    ("UPDATER", "Self-Updating Fix: automatic update installer now cleanly terminates running manager instances, releases file locks, and updates custom install folders without getting stuck in a loop"),
+    ("MOD FIX", "PAK & Loose-File Mod Fix: .pak mods (such as Berserker, outfits, and weapons) now install as numbered re_chunk_000.pak.patch_NNN.pak files with the 5-file dummy PAK barrier instead of pak_mods/ when REFramework is installed"),
+    ("MOD FIX", "REFramework LooseFileLoader: automatically enables LooseFileLoader_Enabled=true in re2_fw_config.txt so natives/stm/... mods apply in-game immediately"),
 ];
 
 #[derive(Clone, Debug)]
@@ -533,17 +534,9 @@ impl App {
         }
 
         // Keep installed file checksums in sync when game_dir has dinput8.dll or Re4-Co-op.dll installed,
-        // and ensure REFramework's menu keybind is set to F5 / Fn+5 (VK_F5 = 116).
+        // and ensure REFramework's LooseFileLoader and F5 menu keybind are enabled in re2_fw_config.txt.
         if let Some(gd) = &self.lib.game_dir {
-            let fw_cfg = gd.join("re2_fw_config.txt");
-            if fw_cfg.is_file() {
-                if let Ok(txt) = std::fs::read_to_string(&fw_cfg) {
-                    if txt.contains("REFrameworkConfig_MenuKey_V2=45") {
-                        let new_txt = txt.replace("REFrameworkConfig_MenuKey_V2=45", "REFrameworkConfig_MenuKey_V2=116");
-                        let _ = fsx::write_atomic(&fw_cfg, new_txt.as_bytes());
-                    }
-                }
-            }
+            mods::ensure_reframework_config(gd);
             let mut updated = false;
             for m in &mut self.lib.state.mods {
                 for f in &mut m.files {
