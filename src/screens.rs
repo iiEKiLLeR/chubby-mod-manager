@@ -15,7 +15,18 @@ impl App {
         let (w, h) = (screen_width(), screen_height());
         self.draw_top(w);
         self.draw_nav(h);
-        let main = Rect::new(206.0, 66.0, w - 216.0, h - 66.0 - 40.0);
+        let nav_split_x = 10.0 + self.nav_w + 5.0;
+        let main_h = h - 66.0 - 40.0;
+        if let Some(mx) = self.ui.vsplitter(DragId::NavWidth, nav_split_x, 66.0, main_h) {
+            let nw = (mx - 10.0).clamp(145.0, (w * 0.30).clamp(180.0, 320.0)).round();
+            if (nw - self.nav_w).abs() >= 1.0 {
+                self.nav_w = nw;
+                self.cfg.set("layout_nav_w", nw as i64);
+                self.layout_dirty = true;
+            }
+        }
+        let main_x = 10.0 + self.nav_w + 10.0;
+        let main = Rect::new(main_x, 66.0, (w - main_x - 10.0).max(400.0), main_h);
         match self.tab {
             Tab::Mods => self.draw_mods(main),
             Tab::Coop => self.draw_coop(main),
@@ -166,7 +177,7 @@ impl App {
 
     fn draw_nav(&mut self, h: f32) {
         let t = *self.ui.theme();
-        let r = Rect::new(10.0, 66.0, 186.0, h - 66.0 - 40.0);
+        let r = Rect::new(10.0, 66.0, self.nav_w, h - 66.0 - 40.0);
         self.ui.panel(r, t.panel);
         let mut y = r.y + 10.0;
         for (tab_id, label) in TABS {
@@ -348,24 +359,43 @@ impl App {
             _ => {}
         }
 
-        let cat_w = 202.0;
-        let cat_r = Rect::new(area.x, area.y + 44.0, cat_w, area.h - 44.0);
-        let rem_w = area.w - cat_w - 20.0;
-        let list_w = (rem_w * 0.54).floor();
+        let max_cat_w = (area.w * 0.36).clamp(180.0, 380.0);
+        self.cat_w = self.cat_w.clamp(145.0, max_cat_w);
+        let cat_r = Rect::new(area.x, area.y + 44.0, self.cat_w, area.h - 44.0);
+        let cat_split_x = cat_r.x + cat_r.w + 5.0;
+        if let Some(mx) = self.ui.vsplitter(DragId::CatWidth, cat_split_x, cat_r.y, cat_r.h) {
+            let cw = (mx - area.x).clamp(145.0, max_cat_w).round();
+            if (cw - self.cat_w).abs() >= 1.0 {
+                self.cat_w = cw;
+                self.cfg.set("layout_cat_w", cw as i64);
+                self.layout_dirty = true;
+            }
+        }
+
+        let rem_w = (area.w - self.cat_w - 20.0).max(320.0);
+        let list_w = (rem_w * (self.modlist_pct / 100.0)).floor().clamp(220.0, rem_w - 200.0);
         let list_r = Rect::new(cat_r.x + cat_r.w + 10.0, cat_r.y, list_w, cat_r.h);
-        let det_r = Rect::new(list_r.x + list_r.w + 10.0, list_r.y, rem_w - list_w, list_r.h);
+        let list_split_x = list_r.x + list_r.w + 5.0;
+        if let Some(mx) = self.ui.vsplitter(DragId::ModListSplit, list_split_x, list_r.y, list_r.h) {
+            let pct = (((mx - list_r.x) / rem_w) * 100.0).clamp(28.0, 74.0).round();
+            if (pct - self.modlist_pct).abs() >= 1.0 {
+                self.modlist_pct = pct;
+                self.cfg.set("layout_modlist_pct", pct as i64);
+                self.layout_dirty = true;
+            }
+        }
+        let det_r = Rect::new(list_r.x + list_r.w + 10.0, list_r.y, (rem_w - list_w).max(180.0), list_r.h);
 
         self.draw_categories_panel(cat_r);
         self.ui.panel(list_r, t.panel);
 
         // Top context header inside the mod list so it's always obvious which category is shown.
-        let vis = self.visible();
         let hdr_r = Rect::new(list_r.x + 6.0, list_r.y + 6.0, list_r.w - 12.0, 32.0);
         fill_rrect(hdr_r, 6.0, t.panel2);
         stroke_rrect(hdr_r, 6.0, 1.0, t.line);
         if let Some((grp, cat)) = self.selected_category.clone() {
             let title = format!("{}  >  {} ({})", grp, cat.to_uppercase(), vis.len());
-            let fit_t = self.ui.fit(&title, 14.0, hdr_r.w - 116.0);
+            let fit_t = self.ui.bfit(&title, 14.0, (hdr_r.w - 116.0).max(40.0));
             self.ui.btext(&fit_t, hdr_r.x + 12.0, hdr_r.y + 21.0, 14.0, t.accent_hi);
             let all_btn = Rect::new(hdr_r.x + hdr_r.w - 102.0, hdr_r.y + 4.0, 96.0, 24.0);
             if self.ui.button(all_btn, "Show All Mods", 1, true) {
@@ -385,6 +415,8 @@ impl App {
             self.ui.text(grp_label, grp_btn.x + 10.0, grp_btn.y + 16.5, 12.5, if self.group_by_category { t.text } else { t.muted });
             if self.ui.click(grp_btn) {
                 self.group_by_category = !self.group_by_category;
+                self.cfg.set("group_by_category", if self.group_by_category { 1 } else { 0 });
+                self.layout_dirty = true;
             }
         }
 
@@ -512,8 +544,8 @@ impl App {
                                 fill_rrect(rr, 6.0, Color::new(1.0, 1.0, 1.0, 0.04));
                             }
 
-                            // Interactive ON / OFF pill switch on the left side of the mod row.
-                            let sw_r = Rect::new(rr.x + 8.0, rr.y + 9.0, 40.0, 22.0);
+                            // Single interactive ON / OFF pill switch on the left side of the mod row.
+                            let sw_r = Rect::new(rr.x + 10.0, rr.y + 9.0, 42.0, 22.0);
                             let sw_hov = self.ui.hover(sw_r) && !busy && (m.size > 0 || m.installed);
                             let sw_bg = if m.installed {
                                 Color::new(t.good.r, t.good.g, t.good.b, if sw_hov { 0.42 } else { 0.28 })
@@ -527,57 +559,42 @@ impl App {
                             let knob_x = if m.installed { sw_r.x + sw_r.w - 11.0 } else { sw_r.x + 11.0 };
                             draw_circle(knob_x, sw_r.y + sw_r.h / 2.0, 7.0, if m.installed { t.good } else { t.muted });
 
-                            // Right-side ON / OFF button.
-                            let bw = 90.0;
-                            let br = Rect::new(rr.x + rr.w - bw - 4.0, rr.y + 5.0, bw, rr.h - 10.0);
-                            let bhov = self.ui.hover(br) && !busy && (m.size > 0 || m.installed);
-                            if m.installed {
-                                fill_rrect(
-                                    br,
-                                    6.0,
-                                    if bhov {
-                                        Color::new(t.bad.r, t.bad.g, t.bad.b, 0.25)
-                                    } else {
-                                        Color::new(t.good.r, t.good.g, t.good.b, 0.20)
-                                    },
-                                );
-                                stroke_rrect(br, 6.0, 1.2, if bhov { t.bad } else { t.good });
-                                let blbl = if bhov { "Turn OFF" } else { "ON  (Active)" };
-                                let blw = self.ui.width(blbl, 13.0);
-                                self.ui.btext(blbl, br.x + (br.w - blw) / 2.0, br.y + 20.5, 13.0, if bhov { t.bad } else { t.good });
-                            } else {
-                                fill_rrect(br, 6.0, if bhov { t.accent_hi } else { t.accent });
-                                stroke_rrect(br, 6.0, 1.0, if bhov { WHITE } else { t.accent_hi });
-                                let blbl = "Turn ON";
-                                let blw = self.ui.width(blbl, 13.5);
-                                let fg = if bhov { Color::new(0.05, 0.06, 0.08, 1.0) } else { WHITE };
-                                self.ui.btext(blbl, br.x + (br.w - blw) / 2.0, br.y + 20.5, 13.5, fg);
-                            }
-
-                            let mut tx = rr.x + rr.w - bw - 10.0;
-                            if !m.conflicts.is_empty() {
-                                tx -= self.ui.width("shares files", 11.5) + 14.0;
-                                self.ui.tag(tx, rr.y + 11.0, "shares files", t.warn);
-                            }
+                            // Right-aligned tags with exact 12.0pt measurement and 6px spacing so tags never touch.
+                            let tag_y = rr.y + (rr.h - 19.0) * 0.5;
+                            let mut tx = rr.x + rr.w - 10.0;
                             if !m.version.is_empty() {
-                                let v = self.ui.fit(&m.version, 11.5, 56.0);
-                                tx -= self.ui.width(&v, 11.5) + 14.0;
-                                self.ui.tag(tx, rr.y + 11.0, &v, t.muted);
+                                let v = self.ui.fit(&m.version, 12.0, 68.0);
+                                let tw = self.ui.width(&v, 12.0) + 12.0;
+                                tx -= tw;
+                                self.ui.tag(tx, tag_y, &v, t.muted);
+                                tx -= 6.0;
                             }
                             if !m.cat_name.is_empty() {
-                                let ctag = self.ui.fit(&m.cat_name, 11.5, 92.0);
-                                tx -= self.ui.width(&ctag, 11.5) + 14.0;
-                                self.ui.tag(tx, rr.y + 11.0, &ctag, t.accent_hi);
+                                let ctag = self.ui.fit(&m.cat_name, 12.0, 108.0);
+                                let tw = self.ui.width(&ctag, 12.0) + 12.0;
+                                tx -= tw;
+                                self.ui.tag(tx, tag_y, &ctag, t.accent_hi);
+                                tx -= 6.0;
                             }
-                            let nm = self.ui.fit(&m.name, 15.5, (tx - (sw_r.x + sw_r.w + 10.0)).max(60.0));
+                            if !m.conflicts.is_empty() {
+                                let tw = self.ui.width("shares files", 12.0) + 12.0;
+                                tx -= tw;
+                                self.ui.tag(tx, tag_y, "shares files", t.warn);
+                                tx -= 6.0;
+                            }
+
+                            let name_x = sw_r.x + sw_r.w + 12.0;
+                            let avail_w = (tx - name_x - 10.0).max(40.0);
                             if *vi == self.sel {
-                                self.ui.btext(&nm, sw_r.x + sw_r.w + 10.0, rr.y + 25.5, 15.5, t.text);
+                                let nm = self.ui.bfit(&m.name, 15.5, avail_w);
+                                self.ui.btext(&nm, name_x, rr.y + 25.5, 15.5, t.text);
                             } else {
-                                self.ui.text(&nm, sw_r.x + sw_r.w + 10.0, rr.y + 25.5, 15.5, t.text);
+                                let nm = self.ui.fit(&m.name, 15.5, avail_w);
+                                self.ui.text(&nm, name_x, rr.y + 25.5, 15.5, t.text);
                             }
 
                             let can_toggle = !busy && (m.size > 0 || m.installed);
-                            if can_toggle && (self.ui.click(sw_r) || self.ui.click(br)) {
+                            if can_toggle && self.ui.click(sw_r) {
                                 self.sel = *vi;
                                 toggle = Some(m.key.clone());
                             } else if self.ui.click(rr) {
@@ -912,8 +929,17 @@ impl App {
         };
         let m = self.lib.mods[mi].clone();
         let pw = r.w - 24.0;
-        let ph = (pw * 9.0 / 16.0).min(r.h * 0.42);
+        let ph = (r.h * (self.preview_pct / 100.0)).clamp(100.0, (r.h - 210.0).max(120.0));
         let pr = Rect::new(r.x + 12.0, r.y + 12.0, pw, ph);
+        let split_y = pr.y + pr.h + 5.0;
+        if let Some(my) = self.ui.hsplitter(DragId::PreviewHeight, pr.x, split_y, pr.w) {
+            let pct = (((my - (r.y + 12.0)) / r.h) * 100.0).clamp(18.0, 68.0).round();
+            if (pct - self.preview_pct).abs() >= 1.0 {
+                self.preview_pct = pct;
+                self.cfg.set("layout_preview_pct", pct as i64);
+                self.layout_dirty = true;
+            }
+        }
         let tex = if self.cfg.flag("ShowModPreviewScreenshots") { m.screenshot.as_ref().and_then(|p| self.shot(p)) } else { None };
         match tex {
             Some(tex_img) => {
@@ -940,7 +966,7 @@ impl App {
             }
         }
         let mut y = pr.y + pr.h + 28.0;
-        let title = self.ui.fit(&m.name, 20.0, r.w - 36.0);
+        let title = self.ui.bfit(&m.name, 20.0, r.w - 36.0);
         self.ui.btext(&title, r.x + 12.0, y, 20.0, t.text);
         y += 22.0;
         let mut sub = Vec::new();
@@ -1030,43 +1056,61 @@ impl App {
         self.drawn.push("coop");
         let busy = self.is_busy();
         if self.coop.is_none() {
-            let cw = (area.w - 10.0) / 2.0;
-            let host_r = Rect::new(area.x, area.y, cw, 300.0);
-            let join_r = Rect::new(area.x + cw + 10.0, area.y, cw, 300.0);
+            let top_h = self.coop_top_h.clamp(220.0, (area.h - 140.0).max(240.0));
+            let cw = ((area.w - 10.0) * (self.coop_top_pct / 100.0)).floor().clamp(240.0, area.w - 250.0);
+            let host_r = Rect::new(area.x, area.y, cw, top_h);
+            let join_r = Rect::new(area.x + cw + 10.0, area.y, area.w - cw - 10.0, top_h);
+            if let Some(mx) = self.ui.vsplitter(DragId::CoopTopSplit, area.x + cw + 5.0, area.y, top_h) {
+                let pct = (((mx - area.x) / (area.w - 10.0)) * 100.0).clamp(25.0, 75.0).round();
+                if (pct - self.coop_top_pct).abs() >= 1.0 {
+                    self.coop_top_pct = pct;
+                    self.cfg.set("layout_coop_top_pct", pct as i64);
+                    self.layout_dirty = true;
+                }
+            }
+            if let Some(my) = self.ui.hsplitter(DragId::CoopTopHeight, area.x, area.y + top_h + 5.0, area.w) {
+                let nh = (my - area.y).clamp(220.0, (area.h - 140.0).max(240.0)).round();
+                if (nh - self.coop_top_h).abs() >= 1.0 {
+                    self.coop_top_h = nh;
+                    self.cfg.set("layout_coop_top_h", nh as i64);
+                    self.layout_dirty = true;
+                }
+            }
             self.ui.panel(host_r, t.panel);
             self.ui.panel(join_r, t.panel);
             self.ui.btext("Host a session", host_r.x + 18.0, host_r.y + 34.0, 22.0, t.text);
-            self.ui.wrap("Friends join you. Your mod list becomes the one everybody plays with: they download what they are missing from you in one click.", host_r.x + 18.0, host_r.y + 62.0, cw - 36.0, 14.0, t.muted, 4);
-            self.ui.text("Your name", host_r.x + 18.0, host_r.y + 140.0, 14.0, t.muted);
+            self.ui.wrap("Friends join you. Your mod list becomes the one everybody plays with: they download what they are missing from you in one click.", host_r.x + 18.0, host_r.y + 62.0, host_r.w - 36.0, 14.0, t.muted, 4);
+            self.ui.text("Your name", host_r.x + 18.0, host_r.y + 132.0, 14.0, t.muted);
             let mut name = self.fields.remove(&Field::Name).unwrap_or_default();
-            self.ui.field(Rect::new(host_r.x + 18.0, host_r.y + 148.0, cw - 36.0, 32.0), Field::Name, &mut name, "Player");
+            self.ui.field(Rect::new(host_r.x + 18.0, host_r.y + 140.0, host_r.w - 36.0, 32.0), Field::Name, &mut name, "Player");
             self.fields.insert(Field::Name, name);
-            self.ui.text("Port (TCP)", host_r.x + 18.0, host_r.y + 200.0, 14.0, t.muted);
+            self.ui.text("Port (TCP)", host_r.x + 18.0, host_r.y + 188.0, 14.0, t.muted);
             let mut port = self.fields.remove(&Field::Port).unwrap_or_default();
-            self.ui.field(Rect::new(host_r.x + 18.0, host_r.y + 208.0, 120.0, 32.0), Field::Port, &mut port, "9950");
+            self.ui.field(Rect::new(host_r.x + 18.0, host_r.y + 196.0, 120.0, 32.0), Field::Port, &mut port, "9950");
             self.fields.insert(Field::Port, port);
             let lip = format!("This PC: {}", coop::local_ip());
-            self.ui.text(&lip, host_r.x + 150.0, host_r.y + 229.0, 14.0, t.muted);
-            if self.ui.button(Rect::new(host_r.x + 18.0, host_r.y + 252.0, cw - 36.0, 36.0), "Start hosting", 1, !busy) {
+            self.ui.text(&lip, host_r.x + 150.0, host_r.y + 217.0, 14.0, t.muted);
+            let btn_y = (host_r.y + host_r.h - 48.0).max(host_r.y + 236.0);
+            if self.ui.button(Rect::new(host_r.x + 18.0, btn_y, host_r.w - 36.0, 36.0), "Start hosting", 1, !busy) {
                 self.cfg.set("network_port", self.port());
                 self.cfg.set("player_name", self.player_name());
                 self.cfg.save();
                 self.start_host(self.port());
             }
             self.ui.btext("Join a friend", join_r.x + 18.0, join_r.y + 34.0, 22.0, t.text);
-            self.ui.wrap("Type the address your host shows (for example 192.168.1.20 or 26.12.3.4:9950) and press Join.", join_r.x + 18.0, join_r.y + 62.0, cw - 36.0, 14.0, t.muted, 4);
-            self.ui.text("Host address", join_r.x + 18.0, join_r.y + 140.0, 14.0, t.muted);
+            self.ui.wrap("Type the address your host shows (for example 192.168.1.20 or 26.12.3.4:9950) and press Join.", join_r.x + 18.0, join_r.y + 62.0, join_r.w - 36.0, 14.0, t.muted, 4);
+            self.ui.text("Host address", join_r.x + 18.0, join_r.y + 132.0, 14.0, t.muted);
             let mut ip = self.fields.remove(&Field::Ip).unwrap_or_default();
-            let enter = self.ui.field(Rect::new(join_r.x + 18.0, join_r.y + 148.0, cw - 36.0, 32.0), Field::Ip, &mut ip, "IP address");
+            let enter = self.ui.field(Rect::new(join_r.x + 18.0, join_r.y + 140.0, join_r.w - 36.0, 32.0), Field::Ip, &mut ip, "IP address");
             self.fields.insert(Field::Ip, ip.clone());
-            if (self.ui.button(Rect::new(join_r.x + 18.0, join_r.y + 252.0, cw - 36.0, 36.0), "Join", 1, !busy && !ip.trim().is_empty()) || enter) && !ip.trim().is_empty() {
+            if (self.ui.button(Rect::new(join_r.x + 18.0, btn_y, join_r.w - 36.0, 36.0), "Join", 1, !busy && !ip.trim().is_empty()) || enter) && !ip.trim().is_empty() {
                 self.cfg.set("network_ip", ip.trim());
                 self.cfg.set("player_name", self.player_name());
                 self.cfg.save();
                 self.ui.focus = None;
                 self.join(ip.trim());
             }
-            let tips = Rect::new(area.x, area.y + 310.0, area.w, area.h - 310.0);
+            let tips = Rect::new(area.x, area.y + top_h + 10.0, area.w, area.h - top_h - 10.0);
             self.ui.panel(tips, t.panel);
             self.ui.btext("Built-in RE4R Co-op Mod (Chubby Enhanced) & Smooth Checklist", tips.x + 18.0, tips.y + 30.0, 18.0, t.text);
             let sync_lbl = format!("Sync Theme ({})", t.name);
@@ -1089,8 +1133,17 @@ impl App {
             return;
         }
         let hosting = self.hosting();
-        let left = Rect::new(area.x, area.y, (area.w * 0.6).floor(), area.h);
+        let left_w = ((area.w - 10.0) * (self.coop_session_pct / 100.0)).floor().clamp(300.0, area.w - 240.0);
+        let left = Rect::new(area.x, area.y, left_w, area.h);
         let right = Rect::new(left.x + left.w + 10.0, area.y, area.w - left.w - 10.0, area.h);
+        if let Some(mx) = self.ui.vsplitter(DragId::CoopSessionSplit, left.x + left.w + 5.0, area.y, area.h) {
+            let pct = (((mx - area.x) / (area.w - 10.0)) * 100.0).clamp(30.0, 78.0).round();
+            if (pct - self.coop_session_pct).abs() >= 1.0 {
+                self.coop_session_pct = pct;
+                self.cfg.set("layout_coop_session_pct", pct as i64);
+                self.layout_dirty = true;
+            }
+        }
         self.ui.panel(left, t.panel);
         self.ui.panel(right, t.panel);
         let title = if hosting {
@@ -1269,8 +1322,17 @@ impl App {
 
     fn draw_options(&mut self, area: Rect) {
         let t = *self.ui.theme();
-        let left = Rect::new(area.x, area.y, (area.w * 0.5).floor() - 5.0, area.h);
+        let left_w = ((area.w - 10.0) * (self.options_pct / 100.0)).floor().clamp(260.0, area.w - 260.0);
+        let left = Rect::new(area.x, area.y, left_w, area.h);
         let right = Rect::new(left.x + left.w + 10.0, area.y, area.w - left.w - 10.0, area.h);
+        if let Some(mx) = self.ui.vsplitter(DragId::OptionsSplit, left.x + left.w + 5.0, area.y, area.h) {
+            let pct = (((mx - area.x) / (area.w - 10.0)) * 100.0).clamp(30.0, 70.0).round();
+            if (pct - self.options_pct).abs() >= 1.0 {
+                self.options_pct = pct;
+                self.cfg.set("layout_options_pct", pct as i64);
+                self.layout_dirty = true;
+            }
+        }
         self.ui.panel(left, t.panel);
         self.ui.panel(right, t.panel);
         let busy = self.is_busy();

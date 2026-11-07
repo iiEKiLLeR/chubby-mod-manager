@@ -292,6 +292,18 @@ pub enum Field {
     UpdateUrl,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DragId {
+    NavWidth,
+    CatWidth,
+    ModListSplit,
+    PreviewHeight,
+    CoopTopSplit,
+    CoopTopHeight,
+    CoopSessionSplit,
+    OptionsSplit,
+}
+
 pub struct Ui {
     pub font: Option<Font>,
     pub bold: Option<Font>,
@@ -299,9 +311,11 @@ pub struct Ui {
     pub play_icon: Option<Texture2D>,
     pub mouse: Vec2,
     pub pressed: bool,
+    pub down: bool,
     pub consumed: bool,
     pub wheel: f32,
     pub focus: Option<Field>,
+    pub dragging: Option<DragId>,
     pub caret_t: f64,
     pub active: bool, // our window is in front: only then do we look at the mouse
     pub theme_idx: usize,
@@ -366,9 +380,11 @@ impl Ui {
             play_icon: None,
             mouse: vec2(-1.0, -1.0),
             pressed: false,
+            down: false,
             consumed: false,
             wheel: 0.0,
             focus: None,
+            dragging: None,
             caret_t: 0.0,
             active: true,
             theme_idx: 0,
@@ -385,11 +401,16 @@ impl Ui {
             let (x, y) = mouse_position();
             self.mouse = vec2(x, y);
             self.pressed = is_mouse_button_pressed(MouseButton::Left);
+            self.down = is_mouse_button_down(MouseButton::Left);
             self.wheel = mouse_wheel().1;
         } else {
             self.mouse = vec2(-1.0, -1.0);
             self.pressed = false;
+            self.down = false;
             self.wheel = 0.0;
+        }
+        if !self.down {
+            self.dragging = None;
         }
         self.consumed = false;
     }
@@ -434,6 +455,10 @@ impl Ui {
         measure_text(s, self.font.as_ref(), size as u16, 1.0).width
     }
 
+    pub fn bwidth(&self, s: &str, size: f32) -> f32 {
+        measure_text(s, self.bold.as_ref(), size as u16, 1.0).width
+    }
+
     /// Cut text to fit `w` pixels, adding "..." when cut.
     pub fn fit(&self, s: &str, size: f32, w: f32) -> String {
         if self.width(s, size) <= w {
@@ -444,6 +469,66 @@ impl Ui {
             out.pop();
         }
         format!("{}...", out)
+    }
+
+    /// Cut bold text to fit `w` pixels, adding "..." when cut.
+    pub fn bfit(&self, s: &str, size: f32, w: f32) -> String {
+        if self.bwidth(s, size) <= w {
+            return s.to_string();
+        }
+        let mut out: String = s.to_string();
+        while !out.is_empty() && self.bwidth(&format!("{}...", out), size) > w {
+            out.pop();
+        }
+        format!("{}...", out)
+    }
+
+    /// Draggable vertical splitter bar between two side-by-side panels.
+    pub fn vsplitter(&mut self, id: DragId, x: f32, y: f32, h: f32) -> Option<f32> {
+        let t = self.theme();
+        let hit = Rect::new(x - 5.0, y, 10.0, h);
+        let hov = self.hover(hit);
+        if self.pressed && !self.consumed && hov {
+            self.dragging = Some(id);
+            self.consumed = true;
+        }
+        let active = self.dragging == Some(id);
+        let cy = y + h * 0.5;
+        if active || hov {
+            draw_line(x, y + 6.0, x, y + h - 6.0, 2.0, if active { t.accent_hi } else { t.accent });
+            fill_rrect(Rect::new(x - 2.5, cy - 18.0, 5.0, 36.0), 2.5, t.accent_hi);
+        } else {
+            fill_rrect(Rect::new(x - 1.5, cy - 14.0, 3.0, 28.0), 1.5, Color::new(t.muted.r, t.muted.g, t.muted.b, 0.28));
+        }
+        if active {
+            Some(self.mouse.x)
+        } else {
+            None
+        }
+    }
+
+    /// Draggable horizontal splitter bar between two stacked panels.
+    pub fn hsplitter(&mut self, id: DragId, x: f32, y: f32, w: f32) -> Option<f32> {
+        let t = self.theme();
+        let hit = Rect::new(x, y - 5.0, w, 10.0);
+        let hov = self.hover(hit);
+        if self.pressed && !self.consumed && hov {
+            self.dragging = Some(id);
+            self.consumed = true;
+        }
+        let active = self.dragging == Some(id);
+        let cx = x + w * 0.5;
+        if active || hov {
+            draw_line(x + 6.0, y, x + w - 6.0, y, 2.0, if active { t.accent_hi } else { t.accent });
+            fill_rrect(Rect::new(cx - 18.0, y - 2.5, 36.0, 5.0), 2.5, t.accent_hi);
+        } else {
+            fill_rrect(Rect::new(cx - 14.0, y - 1.5, 28.0, 3.0), 1.5, Color::new(t.muted.r, t.muted.g, t.muted.b, 0.28));
+        }
+        if active {
+            Some(self.mouse.y)
+        } else {
+            None
+        }
     }
 
     /// Word-wrapped lines; returns the y after the last line.

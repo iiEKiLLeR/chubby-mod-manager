@@ -29,8 +29,8 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
-    ("TOGGLES", "Instant Mod ON / OFF Switches: added interactive ON/OFF toggle switches on every mod row, category-level All ON / All OFF toggles, top-bar Turn All ON / Turn All OFF buttons, and Spacebar quick-toggle"),
-    ("CATEGORIES", "Mod Category Browser & Auto-Sorting: dedicated CHARACTERS & OTHER category navigator with live mod counts, active status checkboxes, and one-click category switching"),
+    ("LAYOUT", "Resizable Panels & Auto-Save Layout: every panel across the app (Sidebar, Categories, Mod List, Details & Screenshot Preview, Co-op, and Options) can now be resized by dragging its divider, and automatically saves its position"),
+    ("UI & TOGGLES", "Clean Single-Switch Mod Rows: streamlined mod rows to a single left-side ON/OFF toggle switch and fixed tag & title spacing so text never overlaps"),
     ("MOD FIX", "PAK & Loose-File Mod Fix: .pak mods install as numbered re_chunk_000.pak.patch_NNN.pak files with the 5-file dummy PAK barrier, and REFramework LooseFileLoader_Enabled=true is enabled automatically"),
 ];
 
@@ -103,6 +103,16 @@ pub struct App {
     pub selected_category: Option<(String, String)>,
     pub cat_scroll: f32,
     pub group_by_category: bool,
+    pub nav_w: f32,
+    pub cat_w: f32,
+    pub modlist_pct: f32,
+    pub preview_pct: f32,
+    pub coop_top_pct: f32,
+    pub coop_top_h: f32,
+    pub coop_session_pct: f32,
+    pub options_pct: f32,
+    pub layout_dirty: bool,
+    pub last_win_size: (i32, i32),
     pub fields: HashMap<Field, String>,
     pub log: Vec<(String, Color)>,
     pub toast: Option<(String, Color, f64)>,
@@ -174,6 +184,19 @@ impl App {
         fields.insert(Field::UpdateUrl, cfg.get("update_url"));
         let show_update_modal = (!headless && cfg.get("last_seen_version").trim() != VERSION)
             || std::env::args().any(|a| a == "--show-update-popup");
+        let nav_w = (cfg.get_i("layout_nav_w") as f32).clamp(145.0, 320.0);
+        let nav_w = if cfg.get_i("layout_nav_w") <= 0 { 186.0 } else { nav_w };
+        let cat_w = (cfg.get_i("layout_cat_w") as f32).clamp(145.0, 380.0);
+        let cat_w = if cfg.get_i("layout_cat_w") <= 0 { 202.0 } else { cat_w };
+        let modlist_pct = if cfg.get_i("layout_modlist_pct") <= 0 { 54.0 } else { (cfg.get_i("layout_modlist_pct") as f32).clamp(28.0, 74.0) };
+        let preview_pct = if cfg.get_i("layout_preview_pct") <= 0 { 40.0 } else { (cfg.get_i("layout_preview_pct") as f32).clamp(18.0, 68.0) };
+        let coop_top_pct = if cfg.get_i("layout_coop_top_pct") <= 0 { 50.0 } else { (cfg.get_i("layout_coop_top_pct") as f32).clamp(25.0, 75.0) };
+        let coop_top_h = if cfg.get_i("layout_coop_top_h") <= 0 { 300.0 } else { (cfg.get_i("layout_coop_top_h") as f32).clamp(220.0, 440.0) };
+        let coop_session_pct = if cfg.get_i("layout_coop_session_pct") <= 0 { 60.0 } else { (cfg.get_i("layout_coop_session_pct") as f32).clamp(30.0, 78.0) };
+        let options_pct = if cfg.get_i("layout_options_pct") <= 0 { 50.0 } else { (cfg.get_i("layout_options_pct") as f32).clamp(30.0, 70.0) };
+        let group_by_category = cfg.get("group_by_category").trim() != "0";
+        let win_w = cfg.get_i("win_width").max(800) as i32;
+        let win_h = cfg.get_i("win_height").max(500) as i32;
         let mut app = App {
             cfg,
             data,
@@ -190,7 +213,17 @@ impl App {
             filter: Filter::All,
             selected_category: None,
             cat_scroll: 0.0,
-            group_by_category: true,
+            group_by_category,
+            nav_w,
+            cat_w,
+            modlist_pct,
+            preview_pct,
+            coop_top_pct,
+            coop_top_h,
+            coop_session_pct,
+            options_pct,
+            layout_dirty: false,
+            last_win_size: (win_w, win_h),
             fields,
             log: Vec::new(),
             toast: None,
@@ -1428,6 +1461,19 @@ impl App {
             if sig != self.mods_sig {
                 self.mods_sig = sig;
                 self.run_job("New files in the Mods folder", |_| vec![], None);
+            }
+        }
+        if !self.headless {
+            let cur_size = (screen_width().round() as i32, screen_height().round() as i32);
+            if cur_size.0 >= 640 && cur_size.1 >= 420 && cur_size != self.last_win_size {
+                self.last_win_size = cur_size;
+                self.cfg.set("win_width", cur_size.0);
+                self.cfg.set("win_height", cur_size.1);
+                self.layout_dirty = true;
+            }
+            if self.layout_dirty && self.ui.dragging.is_none() {
+                self.cfg.save();
+                self.layout_dirty = false;
             }
         }
         self.target_fps = self.pacing(focused);
