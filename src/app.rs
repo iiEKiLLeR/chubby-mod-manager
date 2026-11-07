@@ -29,8 +29,9 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
-    ("CATEGORIES", "Mod Category Browser & Auto-Sorting: added a dedicated CHARACTERS & OTHER category navigator with live mod counts, active status dots, grouped category headers, and one-click category switching"),
-    ("MOD FIX", "PAK & Loose-File Mod Fix: .pak mods (such as Berserker, outfits, and weapons) install as numbered re_chunk_000.pak.patch_NNN.pak files with the 5-file dummy PAK barrier, and REFramework LooseFileLoader_Enabled=true is enabled automatically"),
+    ("TOGGLES", "Instant Mod ON / OFF Switches: added interactive ON/OFF toggle switches on every mod row, category-level All ON / All OFF toggles, top-bar Turn All ON / Turn All OFF buttons, and Spacebar quick-toggle"),
+    ("CATEGORIES", "Mod Category Browser & Auto-Sorting: dedicated CHARACTERS & OTHER category navigator with live mod counts, active status checkboxes, and one-click category switching"),
+    ("MOD FIX", "PAK & Loose-File Mod Fix: .pak mods install as numbered re_chunk_000.pak.patch_NNN.pak files with the 5-file dummy PAK barrier, and REFramework LooseFileLoader_Enabled=true is enabled automatically"),
 ];
 
 #[derive(Clone, Debug)]
@@ -698,16 +699,61 @@ impl App {
         let installed = self.lib.is_installed(&key);
         if !installed && self.game_running() {
             let m = self.lib.mods.iter().find(|m| m.key == key);
-            if m.map(|m| m.files.iter().any(|f| !f.contains('/') && f.to_lowercase().ends_with(".pak"))).unwrap_or(false) {
-                self.say(Err("Close the game before installing PAK mods.".into()));
+            if m.map(|m| m.files.iter().any(|f| f.to_lowercase().ends_with(".pak"))).unwrap_or(false) {
+                self.say(Err("Close the game before turning on PAK mods.".into()));
                 return;
             }
         }
         if installed {
-            self.run_job("Uninstalling mod", move |l| vec![l.uninstall(&key)], None);
+            self.run_job("Turning mod OFF", move |l| vec![l.uninstall(&key)], None);
         } else {
-            self.run_job("Installing mod", move |l| vec![l.install(&key)], None);
+            self.run_job("Turning mod ON", move |l| vec![l.install(&key)], None);
         }
+    }
+
+    pub fn set_mods_enabled(&mut self, keys: Vec<String>, enable: bool) {
+        if keys.is_empty() {
+            return;
+        }
+        if enable && self.game_running() {
+            let has_pak = keys.iter().any(|k| {
+                self.lib
+                    .mods
+                    .iter()
+                    .find(|m| &m.key == k && !m.installed)
+                    .map(|m| m.files.iter().any(|f| f.to_lowercase().ends_with(".pak")))
+                    .unwrap_or(false)
+            });
+            if has_pak {
+                self.say(Err("Close the game before turning on PAK mods.".into()));
+                return;
+            }
+        }
+        let label = if enable { "Turning mods ON" } else { "Turning mods OFF" };
+        self.run_job(
+            label,
+            move |l| {
+                let mut out = Vec::new();
+                if enable {
+                    for k in keys {
+                        if !l.is_installed(&k) {
+                            out.push(l.install(&k));
+                        }
+                    }
+                } else {
+                    for k in keys.into_iter().rev() {
+                        if l.is_installed(&k) {
+                            out.push(l.uninstall(&k));
+                        }
+                    }
+                }
+                if out.is_empty() {
+                    out.push(Ok(if enable { "All selected mods are already ON.".into() } else { "All selected mods are already OFF.".into() }));
+                }
+                out
+            },
+            None,
+        );
     }
 
     pub fn import(&mut self, paths: Vec<PathBuf>, copy: bool) {
@@ -1277,7 +1323,7 @@ impl App {
                 self.actions.push_back(Action::Down);
             }
         }
-        if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
+        if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) || is_key_pressed(KeyCode::Space) {
             self.actions.push_back(Action::Activate);
         }
         if is_key_pressed(KeyCode::Backspace) || is_key_pressed(KeyCode::Escape) {

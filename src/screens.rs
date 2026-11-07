@@ -307,10 +307,11 @@ impl App {
             bx += bw + 6.0;
         }
         let busy = self.is_busy();
+        let vis = self.visible();
         let mut rx = area.x + area.w;
         let mut clicked = None;
-        for label in ["Uninstall all", "Check files", "Open folder", "Refresh"] {
-            let bw = self.ui.width(label, 15.0) + 22.0;
+        for label in ["Turn All OFF", "Turn All ON", "Check files", "Open folder", "Refresh"] {
+            let bw = self.ui.width(label, 14.5) + 18.0;
             rx -= bw;
             if self.ui.button(Rect::new(rx, area.y, bw, 34.0), label, 0, !busy || label == "Open folder") {
                 clicked = Some(label);
@@ -318,7 +319,18 @@ impl App {
             rx -= 6.0;
         }
         match clicked {
-            Some("Uninstall all") => self.run_job("Uninstalling everything", |l| vec![l.uninstall_all()], None),
+            Some("Turn All OFF") => {
+                if self.selected_category.is_none() && self.filter == Filter::All && self.fields.get(&Field::Search).map(|s| s.is_empty()).unwrap_or(true) {
+                    self.run_job("Turning all mods OFF", |l| vec![l.uninstall_all()], None);
+                } else {
+                    let keys: Vec<String> = vis.iter().map(|&i| self.lib.mods[i].key.clone()).collect();
+                    self.set_mods_enabled(keys, false);
+                }
+            }
+            Some("Turn All ON") => {
+                let keys: Vec<String> = vis.iter().filter(|&&i| self.lib.mods[i].size > 0).map(|&i| self.lib.mods[i].key.clone()).collect();
+                self.set_mods_enabled(keys, true);
+            }
             Some("Check files") => self.run_job(
                 "Checking installed files",
                 |l| {
@@ -429,6 +441,7 @@ impl App {
             let mut cur_y = body_r.y + 4.0 - self.scroll;
             let mut toggle = None;
             let mut pick_cat = None;
+            let mut bulk_cat_toggle: Option<(String, String, bool)> = None;
 
             for it in &items {
                 match it {
@@ -436,20 +449,51 @@ impl App {
                         let h = 28.0;
                         if cur_y >= body_r.y - 4.0 && cur_y + h <= body_r.y + body_r.h {
                             let hr = Rect::new(body_r.x + 8.0, cur_y + 2.0, body_r.w - 18.0, h - 4.0);
-                            let hhov = self.ui.hover(hr);
+                            let all_active = *icnt == *cnt && *cnt > 0;
+                            let sw_label = if all_active { "All OFF" } else { "All ON" };
+                            let sw_w = self.ui.width(sw_label, 11.5) + 16.0;
+                            let sw_btn = Rect::new(hr.x + hr.w - sw_w - 4.0, hr.y + 3.0, sw_w, hr.h - 6.0);
+                            let swhov = self.ui.hover(sw_btn) && !busy;
+                            let hhov = self.ui.hover(hr) && !self.ui.hover(sw_btn);
+
                             fill_rrect(hr, 5.0, if hhov { t.accent_soft } else { Color::new(t.accent.r, t.accent.g, t.accent.b, 0.13) });
                             stroke_rrect(hr, 5.0, 1.0, Color::new(t.accent.r, t.accent.g, t.accent.b, if hhov { 0.55 } else { 0.28 }));
                             fill_rrect(Rect::new(hr.x + 2.0, hr.y + 4.0, 3.0, hr.h - 8.0), 1.5, t.accent_hi);
                             let hlabel = format!("{}  >  {}", grp, cat.to_uppercase());
                             self.ui.btext(&hlabel, hr.x + 12.0, hr.y + 17.0, 13.0, t.accent_hi);
-                            let right_txt = if *icnt > 0 {
-                                format!("{} active / {} total", icnt, cnt)
-                            } else {
-                                format!("{} mod{}", cnt, if *cnt == 1 { "" } else { "s" })
-                            };
+                            let right_txt = format!("{} / {} ON", icnt, cnt);
                             let rw = self.ui.width(&right_txt, 12.0);
-                            self.ui.text(&right_txt, hr.x + hr.w - rw - 10.0, hr.y + 16.5, 12.0, if *icnt > 0 { t.good } else { t.muted });
-                            if self.ui.click(hr) {
+                            self.ui.text(&right_txt, sw_btn.x - rw - 10.0, hr.y + 16.5, 12.0, if *icnt > 0 { t.good } else { t.muted });
+
+                            fill_rrect(
+                                sw_btn,
+                                4.0,
+                                if all_active {
+                                    Color::new(t.good.r, t.good.g, t.good.b, if swhov { 0.34 } else { 0.20 })
+                                } else if swhov {
+                                    t.accent_hi
+                                } else {
+                                    t.field_bg
+                                },
+                            );
+                            stroke_rrect(sw_btn, 4.0, 1.0, if all_active { t.good } else { t.line_hi });
+                            self.ui.btext(
+                                sw_label,
+                                sw_btn.x + 8.0,
+                                sw_btn.y + 13.5,
+                                11.5,
+                                if all_active {
+                                    t.good
+                                } else if swhov {
+                                    Color::new(0.05, 0.06, 0.08, 1.0)
+                                } else {
+                                    t.text
+                                },
+                            );
+
+                            if !busy && self.ui.click(sw_btn) {
+                                bulk_cat_toggle = Some((grp.clone(), cat.clone(), !all_active));
+                            } else if self.ui.click(hr) {
                                 pick_cat = Some((grp.clone(), cat.clone()));
                             }
                         }
@@ -467,13 +511,49 @@ impl App {
                             } else if self.ui.hover(rr) {
                                 fill_rrect(rr, 6.0, Color::new(1.0, 1.0, 1.0, 0.04));
                             }
-                            if m.installed {
-                                draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 7.0, Color::new(t.good.r, t.good.g, t.good.b, 0.22));
-                                draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 4.5, t.good);
+
+                            // Interactive ON / OFF pill switch on the left side of the mod row.
+                            let sw_r = Rect::new(rr.x + 8.0, rr.y + 9.0, 40.0, 22.0);
+                            let sw_hov = self.ui.hover(sw_r) && !busy && (m.size > 0 || m.installed);
+                            let sw_bg = if m.installed {
+                                Color::new(t.good.r, t.good.g, t.good.b, if sw_hov { 0.42 } else { 0.28 })
+                            } else if sw_hov {
+                                t.btn_hover
                             } else {
-                                draw_circle(rr.x + 17.0, rr.y + rr.h / 2.0, 4.5, Color::new(t.muted.r, t.muted.g, t.muted.b, 0.45));
+                                t.field_bg
+                            };
+                            fill_rrect(sw_r, 11.0, sw_bg);
+                            stroke_rrect(sw_r, 11.0, 1.2, if m.installed { t.good } else if sw_hov { t.accent_hi } else { t.line_hi });
+                            let knob_x = if m.installed { sw_r.x + sw_r.w - 11.0 } else { sw_r.x + 11.0 };
+                            draw_circle(knob_x, sw_r.y + sw_r.h / 2.0, 7.0, if m.installed { t.good } else { t.muted });
+
+                            // Right-side ON / OFF button.
+                            let bw = 90.0;
+                            let br = Rect::new(rr.x + rr.w - bw - 4.0, rr.y + 5.0, bw, rr.h - 10.0);
+                            let bhov = self.ui.hover(br) && !busy && (m.size > 0 || m.installed);
+                            if m.installed {
+                                fill_rrect(
+                                    br,
+                                    6.0,
+                                    if bhov {
+                                        Color::new(t.bad.r, t.bad.g, t.bad.b, 0.25)
+                                    } else {
+                                        Color::new(t.good.r, t.good.g, t.good.b, 0.20)
+                                    },
+                                );
+                                stroke_rrect(br, 6.0, 1.2, if bhov { t.bad } else { t.good });
+                                let blbl = if bhov { "Turn OFF" } else { "ON  (Active)" };
+                                let blw = self.ui.width(blbl, 13.0);
+                                self.ui.btext(blbl, br.x + (br.w - blw) / 2.0, br.y + 20.5, 13.0, if bhov { t.bad } else { t.good });
+                            } else {
+                                fill_rrect(br, 6.0, if bhov { t.accent_hi } else { t.accent });
+                                stroke_rrect(br, 6.0, 1.0, if bhov { WHITE } else { t.accent_hi });
+                                let blbl = "Turn ON";
+                                let blw = self.ui.width(blbl, 13.5);
+                                let fg = if bhov { Color::new(0.05, 0.06, 0.08, 1.0) } else { WHITE };
+                                self.ui.btext(blbl, br.x + (br.w - blw) / 2.0, br.y + 20.5, 13.5, fg);
                             }
-                            let bw = 88.0;
+
                             let mut tx = rr.x + rr.w - bw - 10.0;
                             if !m.conflicts.is_empty() {
                                 tx -= self.ui.width("shares files", 11.5) + 14.0;
@@ -489,25 +569,34 @@ impl App {
                                 tx -= self.ui.width(&ctag, 11.5) + 14.0;
                                 self.ui.tag(tx, rr.y + 11.0, &ctag, t.accent_hi);
                             }
-                            let nm = self.ui.fit(&m.name, 15.5, (tx - rr.x - 38.0).max(60.0));
+                            let nm = self.ui.fit(&m.name, 15.5, (tx - (sw_r.x + sw_r.w + 10.0)).max(60.0));
                             if *vi == self.sel {
-                                self.ui.btext(&nm, rr.x + 30.0, rr.y + 25.5, 15.5, t.text);
+                                self.ui.btext(&nm, sw_r.x + sw_r.w + 10.0, rr.y + 25.5, 15.5, t.text);
                             } else {
-                                self.ui.text(&nm, rr.x + 30.0, rr.y + 25.5, 15.5, t.text);
+                                self.ui.text(&nm, sw_r.x + sw_r.w + 10.0, rr.y + 25.5, 15.5, t.text);
                             }
-                            let br = Rect::new(rr.x + rr.w - bw - 4.0, rr.y + 5.0, bw, rr.h - 10.0);
-                            let label = if m.installed { "Uninstall" } else { "Install" };
-                            if self.ui.button(br, label, if m.installed { 0 } else { 1 }, !busy && (m.size > 0 || m.installed)) {
+
+                            let can_toggle = !busy && (m.size > 0 || m.installed);
+                            if can_toggle && (self.ui.click(sw_r) || self.ui.click(br)) {
                                 self.sel = *vi;
                                 toggle = Some(m.key.clone());
-                            }
-                            if self.ui.click(rr) {
+                            } else if self.ui.click(rr) {
                                 self.sel = *vi;
                             }
                         }
                         cur_y += row;
                     }
                 }
+            }
+            if let Some((grp, cat, enable)) = bulk_cat_toggle {
+                let keys: Vec<String> = self
+                    .lib
+                    .mods
+                    .iter()
+                    .filter(|m| m.cat_group.eq_ignore_ascii_case(&grp) && m.cat_name.eq_ignore_ascii_case(&cat) && (m.size > 0 || m.installed))
+                    .map(|m| m.key.clone())
+                    .collect();
+                self.set_mods_enabled(keys, enable);
             }
             if let Some(cat_pair) = pick_cat {
                 self.selected_category = Some(cat_pair);
@@ -594,6 +683,8 @@ impl App {
 
         let mut y = list_top - self.cat_scroll;
         let mut clicked_cat: Option<(String, String)> = None;
+        let mut toggle_cat_sq: Option<(String, String, bool)> = None;
+        let busy = self.is_busy();
 
         for (section_title, group_key, entries) in [("CHARACTERS", "CHARACTERS", &chars), ("OTHER", "OTHER", &others)] {
             if y >= list_top - 4.0 && y + sec_h <= list_top + list_h + 2.0 {
@@ -614,17 +705,17 @@ impl App {
                         .unwrap_or(false);
                     let sq = Rect::new(r.x + 8.0, y + 2.0, 22.0, row_h - 4.0);
                     let bar = Rect::new(r.x + 33.0, y + 2.0, r.w - 41.0, row_h - 4.0);
-                    let full_row = Rect::new(r.x + 8.0, y + 2.0, r.w - 16.0, row_h - 4.0);
-                    let hov = self.ui.hover(full_row);
+                    let sq_hov = self.ui.hover(sq) && *count > 0 && !busy;
+                    let hov = self.ui.hover(bar);
 
-                    // Left status square (shows installed / populated status at a glance)
+                    // Left status checkbox square (click to toggle all mods in this category ON/OFF)
                     fill_rrect(
                         sq,
                         4.0,
                         if *inst_count > 0 {
-                            Color::new(t.good.r, t.good.g, t.good.b, 0.22)
+                            Color::new(t.good.r, t.good.g, t.good.b, if sq_hov { 0.38 } else { 0.22 })
                         } else if *count > 0 {
-                            t.accent_soft
+                            if sq_hov { t.btn_hover } else { t.accent_soft }
                         } else {
                             t.field_bg
                         },
@@ -635,14 +726,14 @@ impl App {
                         1.0,
                         if *inst_count > 0 {
                             t.good
-                        } else if is_sel {
+                        } else if sq_hov || is_sel {
                             t.accent_hi
                         } else {
                             t.line
                         },
                     );
                     if *inst_count > 0 {
-                        draw_circle(sq.x + sq.w / 2.0, sq.y + sq.h / 2.0, 4.0, t.good);
+                        draw_circle(sq.x + sq.w / 2.0, sq.y + sq.h / 2.0, 4.5, t.good);
                     } else if *count > 0 {
                         draw_circle(sq.x + sq.w / 2.0, sq.y + sq.h / 2.0, 3.0, t.accent_hi);
                     }
@@ -688,13 +779,30 @@ impl App {
                         self.ui.text(&fit_lbl, bar.x + (bar.w - lw) / 2.0, bar.y + 17.5, 13.5, txt_col);
                     }
 
-                    if self.ui.click(full_row) {
+                    if *count > 0 && !busy && self.ui.click(sq) {
+                        toggle_cat_sq = Some((group_key.to_string(), cname.clone(), *inst_count < *count));
+                    } else if self.ui.click(bar) || ( *count == 0 && self.ui.click(sq) ) {
                         clicked_cat = Some((group_key.to_string(), cname.clone()));
                     }
                 }
                 y += row_h;
             }
             y += 4.0;
+        }
+
+        if let Some((grp, cat, enable)) = toggle_cat_sq {
+            let keys: Vec<String> = self
+                .lib
+                .mods
+                .iter()
+                .filter(|m| {
+                    ((m.cat_group.eq_ignore_ascii_case(&grp) && m.cat_name.eq_ignore_ascii_case(&cat))
+                        || (grp == "OTHER" && m.categories.iter().any(|c| c.eq_ignore_ascii_case(&cat))))
+                        && (m.size > 0 || m.installed)
+                })
+                .map(|m| m.key.clone())
+                .collect();
+            self.set_mods_enabled(keys, enable);
         }
 
         if let Some((g, c)) = clicked_cat {
@@ -903,7 +1011,7 @@ impl App {
         }
         let busy = self.is_busy();
         let bw = (r.w - 24.0 - 12.0) / 3.0;
-        let label = if m.installed { "Uninstall" } else { "Install" };
+        let label = if m.installed { "Turn OFF" } else { "Turn ON" };
         if self.ui.button(Rect::new(r.x + 12.0, btn_y, bw, 34.0), label, 1, !busy && (m.size > 0 || m.installed)) {
             self.toggle_mod(m.key.clone());
         }
