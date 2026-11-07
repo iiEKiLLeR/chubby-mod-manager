@@ -404,11 +404,12 @@ impl App {
                 self.scroll = 0.0;
             }
         } else {
-            let title = format!("ALL MODS ({})", vis.len());
-            self.ui.btext(&title, hdr_r.x + 12.0, hdr_r.y + 21.0, 14.0, t.text);
             let grp_label = if self.group_by_category { "Category Headers: ON" } else { "Category Headers: OFF" };
             let gw = self.ui.width(grp_label, 12.5) + 20.0;
             let grp_btn = Rect::new(hdr_r.x + hdr_r.w - gw - 6.0, hdr_r.y + 4.0, gw, 24.0);
+            let title = format!("ALL MODS ({})", vis.len());
+            let fit_t = self.ui.bfit(&title, 14.0, (grp_btn.x - hdr_r.x - 20.0).max(36.0));
+            self.ui.btext(&fit_t, hdr_r.x + 12.0, hdr_r.y + 21.0, 14.0, t.text);
             let ghov = self.ui.hover(grp_btn);
             fill_rrect(grp_btn, 5.0, if self.group_by_category { t.accent_soft } else if ghov { t.btn_hover } else { t.field_bg });
             stroke_rrect(grp_btn, 5.0, 1.0, if self.group_by_category { t.accent } else { t.line });
@@ -491,11 +492,15 @@ impl App {
                             fill_rrect(hr, 5.0, if hhov { t.accent_soft } else { Color::new(t.accent.r, t.accent.g, t.accent.b, 0.13) });
                             stroke_rrect(hr, 5.0, 1.0, Color::new(t.accent.r, t.accent.g, t.accent.b, if hhov { 0.55 } else { 0.28 }));
                             fill_rrect(Rect::new(hr.x + 2.0, hr.y + 4.0, 3.0, hr.h - 8.0), 1.5, t.accent_hi);
-                            let hlabel = format!("{}  >  {}", grp, cat.to_uppercase());
-                            self.ui.btext(&hlabel, hr.x + 12.0, hr.y + 17.0, 13.0, t.accent_hi);
                             let right_txt = format!("{} / {} ON", icnt, cnt);
                             let rw = self.ui.width(&right_txt, 12.0);
-                            self.ui.text(&right_txt, sw_btn.x - rw - 10.0, hr.y + 16.5, 12.0, if *icnt > 0 { t.good } else { t.muted });
+                            let cnt_x = sw_btn.x - rw - 10.0;
+                            if cnt_x > hr.x + 80.0 {
+                                self.ui.text(&right_txt, cnt_x, hr.y + 16.5, 12.0, if *icnt > 0 { t.good } else { t.muted });
+                            }
+                            let h_max_w = ((if cnt_x > hr.x + 80.0 { cnt_x } else { sw_btn.x }) - hr.x - 20.0).max(40.0);
+                            let hlabel = self.ui.bfit(&format!("{}  >  {}", grp, cat.to_uppercase()), 13.0, h_max_w);
+                            self.ui.btext(&hlabel, hr.x + 12.0, hr.y + 17.0, 13.0, t.accent_hi);
 
                             fill_rrect(
                                 sw_btn,
@@ -560,30 +565,37 @@ impl App {
                             draw_circle(knob_x, sw_r.y + sw_r.h / 2.0, 7.0, if m.installed { t.good } else { t.muted });
 
                             // Right-aligned tags with exact 12.0pt measurement and 6px spacing so tags never touch.
+                            let name_x = sw_r.x + sw_r.w + 12.0;
+                            let min_name_w = 120.0;
                             let tag_y = rr.y + (rr.h - 19.0) * 0.5;
                             let mut tx = rr.x + rr.w - 10.0;
                             if !m.version.is_empty() {
                                 let v = self.ui.fit(&m.version, 12.0, 68.0);
                                 let tw = self.ui.width(&v, 12.0) + 12.0;
-                                tx -= tw;
-                                self.ui.tag(tx, tag_y, &v, t.muted);
-                                tx -= 6.0;
+                                if tx - tw >= name_x + min_name_w {
+                                    tx -= tw;
+                                    self.ui.tag(tx, tag_y, &v, t.muted);
+                                    tx -= 6.0;
+                                }
                             }
                             if !m.cat_name.is_empty() {
                                 let ctag = self.ui.fit(&m.cat_name, 12.0, 108.0);
                                 let tw = self.ui.width(&ctag, 12.0) + 12.0;
-                                tx -= tw;
-                                self.ui.tag(tx, tag_y, &ctag, t.accent_hi);
-                                tx -= 6.0;
+                                if tx - tw >= name_x + min_name_w {
+                                    tx -= tw;
+                                    self.ui.tag(tx, tag_y, &ctag, t.accent_hi);
+                                    tx -= 6.0;
+                                }
                             }
                             if !m.conflicts.is_empty() {
                                 let tw = self.ui.width("shares files", 12.0) + 12.0;
-                                tx -= tw;
-                                self.ui.tag(tx, tag_y, "shares files", t.warn);
-                                tx -= 6.0;
+                                if tx - tw >= name_x + min_name_w {
+                                    tx -= tw;
+                                    self.ui.tag(tx, tag_y, "shares files", t.warn);
+                                    tx -= 6.0;
+                                }
                             }
 
-                            let name_x = sw_r.x + sw_r.w + 12.0;
                             let avail_w = (tx - name_x - 10.0).max(40.0);
                             if *vi == self.sel {
                                 let nm = self.ui.bfit(&m.name, 15.5, avail_w);
@@ -1343,20 +1355,22 @@ impl App {
         let exe_ok = !gd.trim().is_empty() && games::exe_path(self.game(), Path::new(gd.trim())).is_file();
         let status = if gd.trim().is_empty() { "Not set" } else if exe_ok { "Game found in this folder." } else { "The game's program is not in this folder." };
         self.ui.text(status, left.x + 18.0, left.y + 98.0, 14.0, if exe_ok { t.good } else { t.warn });
-        if self.ui.button(Rect::new(left.x + 18.0, left.y + 110.0, 120.0, 32.0), "Use folder", 1, !busy) || enter {
+        let btn_w = ((left.w - 36.0 - 16.0) / 3.0).floor().clamp(72.0, 120.0);
+        if self.ui.button(Rect::new(left.x + 18.0, left.y + 110.0, btn_w, 32.0), "Use folder", 1, !busy) || enter {
             self.ui.focus = None;
             self.set_game_dir(&gd);
         }
-        if self.ui.button(Rect::new(left.x + 146.0, left.y + 110.0, 120.0, 32.0), "Auto-detect", 0, !busy) {
+        if self.ui.button(Rect::new(left.x + 18.0 + btn_w + 8.0, left.y + 110.0, btn_w, 32.0), "Auto-detect", 0, !busy) {
             match games::detect_install(self.game(), &games::steam_common_dirs()) {
                 Some(d) => self.set_game_dir(&d.to_string_lossy()),
                 None => self.say(Err(format!("Could not find {} in your Steam libraries.", self.game().exe))),
             }
         }
-        if self.ui.button(Rect::new(left.x + 274.0, left.y + 110.0, 120.0, 32.0), "Open", 0, exe_ok) {
+        if self.ui.button(Rect::new(left.x + 18.0 + (btn_w + 8.0) * 2.0, left.y + 110.0, btn_w, 32.0), "Open", 0, exe_ok) {
             sys::open(gd.trim());
         }
-        self.ui.btext("Bring mods over from Fluffy Mod Manager", left.x + 18.0, left.y + 180.0, 18.0, t.text);
+        let f_hdr = self.ui.bfit("Bring mods over from Fluffy Mod Manager", 18.0, left.w - 36.0);
+        self.ui.btext(&f_hdr, left.x + 18.0, left.y + 180.0, 18.0, t.text);
         let mut ff = self.fields.remove(&Field::Fluffy).unwrap_or_default();
         self.ui.field(Rect::new(left.x + 18.0, left.y + 194.0, left.w - 36.0, 32.0), Field::Fluffy, &mut ff, "Fluffy Mod Manager folder (has Modmanager.exe)");
         self.fields.insert(Field::Fluffy, ff.clone());
@@ -1502,14 +1516,16 @@ impl App {
                 "FIX" => t.good,
                 _ => t.accent_hi,
             };
-            let pill = Rect::new(row_r.x + 10.0, row_r.y + 8.0, 66.0, 22.0);
+            let pill_w = (self.ui.bwidth(&tag, 12.0) + 18.0).max(74.0);
+            let pill = Rect::new(row_r.x + 10.0, row_r.y + 8.0, pill_w, 22.0);
             fill_rrect(pill, 5.0, Color::new(tag_col.r, tag_col.g, tag_col.b, 0.20));
             stroke_rrect(pill, 5.0, 1.0, tag_col);
-            let tw = self.ui.width(&tag, 12.0);
+            let tw = self.ui.bwidth(&tag, 12.0);
             self.ui.btext(&tag, pill.x + (pill.w - tw) * 0.5, pill.y + 15.5, 12.0, tag_col);
 
-            let fitted = self.ui.fit(&desc, 14.5, row_r.w - 94.0);
-            self.ui.text(&fitted, row_r.x + 86.0, row_r.y + 24.0, 14.5, t.text);
+            let desc_x = pill.x + pill.w + 12.0;
+            let fitted = self.ui.fit(&desc, 14.5, (row_r.x + row_r.w - desc_x - 10.0).max(40.0));
+            self.ui.text(&fitted, desc_x, row_r.y + 24.0, 14.5, t.text);
             ry += 44.0;
         }
 

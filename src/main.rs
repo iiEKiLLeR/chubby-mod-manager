@@ -90,8 +90,12 @@ fn window_conf() -> Conf {
     }
     let data = arg_value("--data").map(PathBuf::from).unwrap_or_else(exe_dir);
     let cfg = Config::load(&data.join("Data").join("config.cfg"));
-    let headless = arg_value("--screenshot").is_some() || arg_value("--self-test").is_some();
-    let (w, h) = if headless {
+    let is_shot = arg_value("--screenshot").is_some();
+    let is_test = arg_value("--self-test").is_some();
+    let headless = is_shot || is_test;
+    let (w, h) = if is_shot {
+        (1480, 820)
+    } else if is_test {
         (1280, 720)
     } else {
         (
@@ -221,12 +225,25 @@ async fn main() {
     let mut app = App::new(data, headless);
     // Screenshot helpers (for the README): pick a tab / preview a theme without saving it.
     if shot.is_some() {
+        app.nav_w = 184.0;
+        app.cat_w = 212.0;
+        app.modlist_pct = 55.0;
+        app.preview_pct = 42.0;
+        app.coop_top_pct = 50.0;
+        app.coop_top_h = 265.0;
+        app.coop_session_pct = 46.0;
+        app.options_pct = 48.0;
         if let Some(tab) = arg_value("--shot-tab") {
             app.tab = match tab.to_ascii_lowercase().as_str() {
                 "coop" | "co-op" => app::Tab::Coop,
                 "presets" => app::Tab::Presets,
                 "options" => app::Tab::Options,
                 "log" => app::Tab::Log,
+                "patch-notes" | "patch_notes" => {
+                    app.show_update_modal = true;
+                    app.update_status = format!("Running v{} (latest installed)", app::VERSION);
+                    app::Tab::Mods
+                }
                 _ => app::Tab::Mods,
             };
         }

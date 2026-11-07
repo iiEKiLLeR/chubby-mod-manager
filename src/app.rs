@@ -29,9 +29,12 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
-    ("LAYOUT", "Resizable Panels & Auto-Save Layout: every panel across the app (Sidebar, Categories, Mod List, Details & Screenshot Preview, Co-op, and Options) can now be resized by dragging its divider, and automatically saves its position"),
+    ("LAYOUT", "Resizable Panels & Auto-Save Layout: every panel across the app can be resized by dragging its divider and automatically saves its position"),
     ("UI & TOGGLES", "Clean Single-Switch Mod Rows: streamlined mod rows to a single left-side ON/OFF toggle switch and fixed tag & title spacing so text never overlaps"),
-    ("MOD FIX", "PAK & Loose-File Mod Fix: .pak mods install as numbered re_chunk_000.pak.patch_NNN.pak files with the 5-file dummy PAK barrier, and REFramework LooseFileLoader_Enabled=true is enabled automatically"),
+    ("CATEGORIES", "Fluffy-Style Category Navigator: automatic CHARACTERS & OTHER categorization with per-category counts, active indicators, and bulk All ON / All OFF toggles"),
+    ("MOD FIX", "PAK & Loose-File Mod Fix: .pak mods install as numbered re_chunk_000.pak.patch_NNN.pak files with the 5-file dummy PAK barrier + auto LooseFileLoader"),
+    ("CO-OP FIX", "Bundled RE4R Co-op v4.2-ChubbyFix: single OS mouse cursor fix, 60Hz smooth enemy & partner animation, and non-blocking inventory & pause menus"),
+    ("THEMES", "Live REFramework & Co-op Theme Sync: 5 built-in themes that dynamically synchronize with in-game REFramework and Co-op menus"),
 ];
 
 #[derive(Clone, Debug)]
