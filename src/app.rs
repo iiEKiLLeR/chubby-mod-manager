@@ -18,6 +18,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BUNDLED_COOP_ZIP_NAME: &str = "MULTIPLAYER_RE4R_Chubby_Enhanced.zip";
 pub const BUNDLED_COOP_ZIP: &[u8] = include_bytes!("../assets/MULTIPLAYER_RE4R_Chubby_Enhanced.zip");
 pub const BUNDLED_COOP_FIX_LUA: &[u8] = include_bytes!("../assets/chubby_coop_fix.lua");
+pub const BUNDLED_COOP_SHARED_LUA: &[u8] = include_bytes!("../assets/shared.lua");
 
 /// Public GitHub repo that hosts installer downloads; every copy of the app checks it on startup.
 pub const GITHUB_RELEASES_REPO: &str = "iiEKiLLeR/chubby-mod-manager-releases";
@@ -29,11 +30,11 @@ pub fn github_installer_url(version: &str) -> String {
 }
 
 pub const CURRENT_RELEASE_NOTES: &[(&str, &str)] = &[
+    ("CO-OP CRASH FIX", "Death, Respawn & Character Switch Crash Protection: fixes simultaneous crashes when a partner dies, crashes when switching to Ada/Mercenaries characters, and MotionFsm2 null-pointer crashes"),
     ("LAYOUT", "Resizable Panels & Auto-Save Layout: every panel across the app can be resized by dragging its divider and automatically saves its position"),
     ("UI & TOGGLES", "Clean Single-Switch Mod Rows: streamlined mod rows to a single left-side ON/OFF toggle switch and fixed tag & title spacing so text never overlaps"),
     ("CATEGORIES", "Fluffy-Style Category Navigator: automatic CHARACTERS & OTHER categorization with per-category counts, active indicators, and bulk All ON / All OFF toggles"),
     ("MOD FIX", "PAK & Loose-File Mod Fix: .pak mods install as numbered re_chunk_000.pak.patch_NNN.pak files with the 5-file dummy PAK barrier + auto LooseFileLoader"),
-    ("CO-OP FIX", "Bundled RE4R Co-op v4.2-ChubbyFix: single OS mouse cursor fix, 60Hz smooth enemy & partner animation, and non-blocking inventory & pause menus"),
     ("THEMES", "Live REFramework & Co-op Theme Sync: 5 built-in themes that dynamically synchronize with in-game REFramework and Co-op menus"),
 ];
 
@@ -548,6 +549,10 @@ impl App {
                 }
             }
             let dll_path = root.join("reframework").join("plugins").join("Re4-Co-op.dll");
+            let tmp_dll_path = root.join("reframework").join("plugins").join("Re4-Co-op.dll.remh-tmp");
+            if tmp_dll_path.is_file() {
+                let _ = std::fs::remove_file(&tmp_dll_path);
+            }
             if dll_path.is_file() {
                 if let Ok(mut bytes) = std::fs::read(&dll_path) {
                     if patch_coop_dll_bytes(&mut bytes, &t) {
@@ -565,13 +570,16 @@ impl App {
                 if needs_hz_write {
                     let _ = fsx::write_atomic(&hz_path, hz_opt_json.as_bytes());
                 }
-                // Keep the Chubby Co-op fix script up to date wherever the mod is installed.
-                let lua_path = root.join("reframework").join("autorun").join("!chubby_coop_fix.lua");
-                if lua_path.is_file() {
-                    let current = std::fs::read(&lua_path).unwrap_or_default();
-                    if current != BUNDLED_COOP_FIX_LUA {
-                        let _ = fsx::write_atomic(&lua_path, BUNDLED_COOP_FIX_LUA);
-                    }
+                // Keep the Chubby Co-op fix scripts up to date wherever the mod is installed.
+                let autorun_dir = root.join("reframework").join("autorun");
+                let _ = std::fs::create_dir_all(&autorun_dir);
+                let lua_path = autorun_dir.join("!chubby_coop_fix.lua");
+                if std::fs::read(&lua_path).unwrap_or_default() != BUNDLED_COOP_FIX_LUA {
+                    let _ = fsx::write_atomic(&lua_path, BUNDLED_COOP_FIX_LUA);
+                }
+                let shared_path = autorun_dir.join("shared.lua");
+                if shared_path.is_file() && std::fs::read(&shared_path).unwrap_or_default() != BUNDLED_COOP_SHARED_LUA {
+                    let _ = fsx::write_atomic(&shared_path, BUNDLED_COOP_SHARED_LUA);
                 }
             }
         }
@@ -584,7 +592,13 @@ impl App {
             for m in &mut self.lib.state.mods {
                 for f in &mut m.files {
                     let dl = f.dest.to_ascii_lowercase();
-                    if dl.ends_with("dinput8.dll") || dl.ends_with("re4-co-op.dll") || dl.ends_with("chubby_theme.json") || dl.ends_with("re4mp_hz.json") || dl.ends_with("!chubby_coop_fix.lua") {
+                    if dl.ends_with("dinput8.dll")
+                        || dl.ends_with("re4-co-op.dll")
+                        || dl.ends_with("chubby_theme.json")
+                        || dl.ends_with("re4mp_hz.json")
+                        || dl.ends_with("!chubby_coop_fix.lua")
+                        || dl.ends_with("shared.lua")
+                    {
                         if let Ok(crc) = fsx::crc_file(&gd.join(&f.dest)) {
                             if f.crc != crc {
                                 f.crc = crc;
